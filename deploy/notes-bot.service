@@ -1,0 +1,19 @@
+[Unit]
+Description=Telegram bot that turns lectures into study notes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=notes-bot
+Group=notes-bot
+WorkingDirectory=/opt/notes-bot
+EnvironmentFile=/etc/notes-bot/bot.env
+ExecStart=/opt/notes-bot/venv/bin/python -m notes_bot
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

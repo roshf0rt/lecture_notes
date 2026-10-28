@@ -4,6 +4,7 @@ import asyncio
 import io
 import logging
 import re
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
 
@@ -21,8 +22,9 @@ from telegram.ext import (
 
 from .config import Config
 from .gemini import GeminiClient, GeminiError, is_media_name
+from .keys import KeyVault
 from .menus import apply_choice, build_view, color_prompt
-from .pipeline import NotesPipeline, Result
+from .pipeline import Model, NotesPipeline, Result
 from .render_tg import plain_text
 from .settings import SettingsStore
 from .themes import CUSTOM, parse_hex
@@ -31,6 +33,7 @@ log = logging.getLogger(__name__)
 
 MAX_FILE_BYTES = 20 * 1024 * 1024  # Bot API refuses to download bigger files
 TEXT_EXTENSIONS = (".txt", ".md")
+KEY_PATTERN = re.compile(r"AIza[0-9A-Za-z_-]{30,60}")
 STAGES = {
     "transcribing": "🎙 Расшифровываю запись…",
     "writing": "✍️ Пишу конспект…",
@@ -38,10 +41,20 @@ STAGES = {
 }
 WELCOME = (
     "Привет! Я делаю конспекты лекций в аккуратном оформлении.\n\n"
-    "Пришлите:\n"
+    "Сначала пришлите свой ключ Gemini: команда /setkey, затем ключ одним сообщением. "
+    "Бесплатный ключ создаётся в Google AI Studio: https://aistudio.google.com/apikey\n\n"
+    "Потом пришлите:\n"
     "• голосовое, аудио или видео с речью (до 20 МБ);\n"
     "• текст расшифровки сообщением или файлом .txt.\n\n"
-    "Формат (PDF или сообщения), длину, блоки и цвета можно настроить в /settings."
+    "Формат, длину, блоки и цвета настраивают в /settings."
+)
+NO_KEY = (
+    "Чтобы делать конспекты, сначала пришлите свой ключ Gemini: команда /setkey.\n"
+    "Бесплатный ключ создаётся в Google AI Studio: https://aistudio.google.com/apikey"
+)
+KEY_SAVED = (
+    "✅ Ключ сохранён в зашифрованном виде. Теперь пришлите запись или текст лекции.\n"
+    "Удалите сообщение с ключом из чата: бот не может сделать это сам."
 )
 
 
@@ -49,7 +62,8 @@ WELCOME = (
 class Services:
     config: Config
     store: SettingsStore
-    pipeline: NotesPipeline
+    keys: KeyVault
+    make_model: Callable[[str], Model]
     locks: dict[int, asyncio.Lock]
 
 
@@ -73,6 +87,23 @@ async def _allowed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _allowed(update, context):
         await update.effective_message.reply_text(WELCOME)
+
+
+async def on_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _allowed(update, context):
+        return
+    context.user_data["awaiting"] = "key"
+    await update.effective_message.reply_text(
+        "Пришлите ключ Gemini одним сообщением. Он начинается с AIza.\n"
+        "Получить ключ: https://aistudio.google.com/apikey"
+    )
+
+
+async def on_forgetkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _allowed(update, context):
+        return
+    _services(context).keys.delete(update.effective_user.id)
+    await update.effective_message.reply_text("Ключ удалён. Чтобы снова делать конспекты, пришлите новый: /setkey.")
 
 
 async def on_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -135,13 +166,39 @@ async def _save_color(update: Update, context: ContextTypes.DEFAULT_TYPE, raw: s
     await update.effective_message.reply_text(f"Цвет {color} сохранён.\n\n{text}", reply_markup=keyboard)
 
 
+async def _save_key(update: Update, context: ContextTypes.DEFAULT_TYPE, api_key: str) -> None:
+    message = update.effective_message
+    services = _services(context)
+    try:
+        await services.make_model(api_key).check_key()
+    except GeminiError as error:
+        await message.reply_text(f"😕 {error}\nПришлите другой ключ.")
+        return
+    except Exception:
+        log.exception("Gemini key check failed unexpectedly")
+        await message.reply_text("😕 Не получилось проверить ключ. Попробуйте ещё раз чуть позже.")
+        return
+    services.keys.save(update.effective_user.id, api_key)
+    context.user_data.pop("awaiting", None)
+    await message.reply_text(KEY_SAVED)
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _allowed(update, context):
         return
-    if context.user_data.pop("awaiting", None) == "color":
-        await _save_color(update, context, update.effective_message.text)
+    text = update.effective_message.text
+    awaiting = context.user_data.get("awaiting")
+    if awaiting == "key":
+        await _save_key(update, context, text.strip())
         return
-    await _run_job(update, context, text=update.effective_message.text)
+    if awaiting == "color":
+        context.user_data.pop("awaiting", None)
+        await _save_color(update, context, text)
+        return
+    if KEY_PATTERN.fullmatch(text.strip()):
+        await _save_key(update, context, text.strip())
+        return
+    await _run_job(update, context, text=text)
 
 
 def _attachment(message: Message) -> tuple[object, str] | None:
@@ -202,6 +259,11 @@ async def _run_job(
     message = update.effective_message
     user_id = update.effective_user.id
     services = _services(context)
+    api_key = services.keys.load(user_id)
+    if api_key is None:
+        await message.reply_text(NO_KEY)
+        return
+
     lock = services.locks.setdefault(user_id, asyncio.Lock())
     if lock.locked():
         await message.reply_text("Предыдущий конспект ещё готовится. Дождитесь, пожалуйста, его.")
@@ -215,10 +277,9 @@ async def _run_job(
             with suppress(TelegramError):
                 await status.edit_text(STAGES[stage])
 
+        pipeline = NotesPipeline(services.make_model(api_key))
         try:
-            result = await services.pipeline.run(
-                settings, progress=progress, text=text, audio=audio, audio_name=audio_name
-            )
+            result = await pipeline.run(settings, progress=progress, text=text, audio=audio, audio_name=audio_name)
         except GeminiError as error:
             with suppress(TelegramError):
                 await status.edit_text(f"😕 {error}")
@@ -256,14 +317,20 @@ async def _send(message: Message, result: Result) -> None:
 
 def build_application(config: Config) -> Application:
     application = Application.builder().token(config.telegram_token).concurrent_updates(True).build()
-    pipeline = NotesPipeline(GeminiClient(config.gemini_api_key, config.gemini_model))
+
+    def make_model(api_key: str) -> GeminiClient:
+        return GeminiClient(api_key, config.gemini_model)
+
     application.bot_data["services"] = Services(
         config=config,
         store=SettingsStore(config.data_dir / "settings.sqlite3"),
-        pipeline=pipeline,
+        keys=KeyVault(config.data_dir),
+        make_model=make_model,
         locks={},
     )
     application.add_handler(CommandHandler(["start", "help"], on_start))
+    application.add_handler(CommandHandler("setkey", on_setkey))
+    application.add_handler(CommandHandler("forgetkey", on_forgetkey))
     application.add_handler(CommandHandler("settings", on_settings))
     application.add_handler(CallbackQueryHandler(on_settings_button, pattern=r"^st:"))
     application.add_handler(

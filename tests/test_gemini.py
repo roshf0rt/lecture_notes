@@ -19,16 +19,21 @@ class FakeGeminiServer:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length", 0))
-                payload = json.loads(self.rfile.read(length) or b"{}")
-                server.requests.append({"path": self.path, "body": payload})
+            def _respond(self, payload):
+                server.requests.append({"method": self.command, "path": self.path, "body": payload})
                 data = json.dumps(body).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                self._respond(json.loads(self.rfile.read(length) or b"{}"))
+
+            def do_GET(self):
+                self._respond(None)
 
             def log_message(self, *args):
                 pass
@@ -142,7 +147,7 @@ def test_quota_error_becomes_a_friendly_message(make_server):
 
 def test_bad_key_becomes_a_friendly_message(make_server):
     server = make_server(403, {"error": {"code": 403, "message": "denied", "status": "PERMISSION_DENIED"}})
-    with pytest.raises(GeminiError, match="GEMINI_API_KEY"):
+    with pytest.raises(GeminiError, match="не принял ключ"):
         asyncio.run(_client(server).write("Текст лекции. " * 20, ["takeaways"], "medium"))
 
 
@@ -168,3 +173,17 @@ def test_unsupported_format_is_rejected_before_any_request(make_server):
 @pytest.mark.parametrize(("name", "expected"), [("voice.ogg", True), ("lecture.MP3", True), ("notes.pdf", False)])
 def test_is_media_name(name, expected):
     assert is_media_name(name) is expected
+
+
+def test_check_key_fetches_the_configured_model(make_server):
+    server = make_server(200, {"name": "models/gemini-test"})
+    asyncio.run(_client(server).check_key())
+    assert server.requests[0]["method"] == "GET"
+    assert server.requests[0]["path"].endswith("/models/gemini-test")
+
+
+def test_check_key_reports_a_rejected_key(make_server):
+    body = {"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.", "status": "INVALID_ARGUMENT"}}
+    server = make_server(400, body)
+    with pytest.raises(GeminiError, match="не принял ключ"):
+        asyncio.run(_client(server).check_key())

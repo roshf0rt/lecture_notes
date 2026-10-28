@@ -22,7 +22,6 @@ def _user_ids(raw: str) -> frozenset[int]:
 @dataclass(frozen=True)
 class Config:
     telegram_token: str
-    gemini_api_key: str
     gemini_model: str
     data_dir: Path
     allowed_user_ids: frozenset[int]
@@ -32,7 +31,6 @@ class Config:
         env = os.environ
         return cls(
             telegram_token=_required("TELEGRAM_BOT_TOKEN"),
-            gemini_api_key=_required("GEMINI_API_KEY"),
             gemini_model=env.get("GEMINI_MODEL", "gemini-2.5-flash").strip(),
             data_dir=Path(env.get("DATA_DIR", "data")),
             allowed_user_ids=_user_ids(env.get("ALLOWED_USER_IDS", "")),

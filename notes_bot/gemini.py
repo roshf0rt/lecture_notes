@@ -59,8 +59,8 @@ def _mime_type(filename: str) -> str:
 def _describe(error: errors.APIError) -> str:
     if error.code == 429:
         return "Превышен лимит запросов к Gemini. Подождите минуту или попробуйте позже: бесплатные квоты обновляются ежедневно."
-    if error.code in (401, 403):
-        return "Gemini не принял ключ или доступ к модели. Проверьте GEMINI_API_KEY и GEMINI_MODEL."
+    if error.code in (401, 403) or "API key" in (error.message or ""):
+        return "Gemini не принял ключ или у него нет доступа к модели. Проверьте ключ в Google AI Studio."
     return f"Gemini вернул ошибку {error.code}. Попробуйте ещё раз."
 
 
@@ -83,6 +83,11 @@ class GeminiClient:
         options = types.HttpOptions(base_url=base_url) if base_url else None
         self._client = genai.Client(api_key=api_key, http_options=options)
         self._model = model
+
+    async def check_key(self) -> None:
+        """Raise GeminiError unless the key is accepted and can use the configured model."""
+        async with _friendly_errors():
+            await self._client.aio.models.get(model=self._model)
 
     async def transcribe(self, audio: bytes, filename: str) -> str:
         mime = _mime_type(filename)
