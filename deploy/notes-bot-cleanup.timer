@@ -1,0 +1,9 @@
+[Unit]
+Description=Hourly cleanup of old recordings
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

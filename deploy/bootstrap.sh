@@ -63,4 +63,29 @@ if ! grep -q '^ADMIN_IDS=[0-9]' "$ENV_FILE"; then
   unset ADMIN
 fi
 
+if [ ! -f "$ENV_DIR/api.env" ]; then
+  echo
+  echo "Files over 20 MB (long lectures) need a Telegram API ID, a free one-time setup:"
+  echo "  1. open https://my.telegram.org and log in with your phone number"
+  echo "  2. choose 'API development tools' and create an app (any name)"
+  echo "  3. copy api_id (digits) and api_hash (32 letters and digits)"
+  read -rp "api_id (Enter to skip; files then stay limited to 20 MB): " API_ID < /dev/tty
+  API_ID=$(printf '%s' "$API_ID" | tr -cd '0-9')
+  if [ -n "$API_ID" ]; then
+    read -rsp "api_hash (hidden): " API_HASH < /dev/tty
+    echo
+    API_HASH=$(printf '%s' "$API_HASH" | tr -cd '0-9a-fA-F')
+    if [ "${#API_HASH}" -eq 32 ]; then
+      umask 077
+      printf '%s\n' "TELEGRAM_API_ID=$API_ID" "TELEGRAM_API_HASH=$API_HASH" > "$ENV_DIR/api.env"
+      umask 022
+      echo "Saved $ENV_DIR/api.env"
+    else
+      echo "api_hash must be 32 letters and digits. Skipped; run this script again to retry." >&2
+    fi
+    unset API_HASH
+  fi
+  unset API_ID
+fi
+
 bash "$APP_DIR/deploy/install.sh"

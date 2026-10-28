@@ -1,0 +1,6 @@
+[Unit]
+Description=Delete old recordings of the local Telegram Bot API server
+
+[Service]
+Type=oneshot
+ExecStart=/opt/notes-bot/deploy/cleanup-media.sh

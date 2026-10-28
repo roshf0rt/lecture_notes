@@ -85,3 +85,19 @@ def test_video_and_rare_formats_become_small_opus(tmp_path):
 def test_broken_file_in_a_gemini_format_is_passed_through_when_ffmpeg_fails():
     data = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 50
     assert asyncio.run(prepare(data, "x.mp4", "video/mp4", inline_limit=LIMIT)) == (data, "audio.mp4")
+
+
+def test_file_on_disk_is_read_in_place(tmp_path):
+    data = b"\xff\xf1\x50\x80" + b"\x00" * 100
+    path = tmp_path / "recording"
+    path.write_bytes(data)
+    assert asyncio.run(prepare(None, "recording", None, inline_limit=LIMIT, path=path)) == (data, "audio.aac")
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_big_file_on_disk_is_converted_without_being_loaded(tmp_path):
+    source = tmp_path / "wide.wav"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=5", "-ar", "44100",
+                    "-ac", "2", str(source)], check=True)
+    data, name = asyncio.run(prepare(None, None, None, inline_limit=1000, path=source))  # "big" = over the inline limit
+    assert name == "audio.ogg" and data.startswith(b"OggS") and len(data) < source.stat().st_size / 5

@@ -6,6 +6,7 @@ import logging
 import re
 import secrets
 import time
+from pathlib import Path
 from contextlib import suppress
 from dataclasses import dataclass, replace
 
@@ -56,7 +57,10 @@ from .ui import Ui, html
 
 log = logging.getLogger(__name__)
 
-MAX_FILE_BYTES = 20 * 1024 * 1024  # Bot API refuses to download bigger files
+MAX_FILE_BYTES = 20 * 1024 * 1024  # Telegram's cloud Bot API refuses to give the bot bigger files
+LOCAL_MAX_FILE_BYTES = 2000 * 1024 * 1024  # a local Bot API server allows up to 2 GB
+# Getting a big file from a local server means it is downloaded from Telegram first; that can take minutes.
+FILE_TIMEOUT = 900
 TEXT_EXTENSIONS = (".txt", ".md")
 STAGES = {
     "queued": ("clock", "В очереди"),
@@ -367,6 +371,17 @@ class Pending:
     created: float
 
 
+def _local_path(file) -> Path | None:
+    """A local Bot API server hands out paths on the server's own disk."""
+    path = Path(file.file_path) if file.file_path else None
+    return path if path is not None and path.is_absolute() and path.is_file() else None
+
+
+def _head(path: Path) -> bytes:
+    with path.open("rb") as handle:
+        return handle.read(64)
+
+
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     s = services(context)
     ui = s.ui()
@@ -379,30 +394,38 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if found is None or message.animation:
         return
     attachment, name, mime = found
-    if (attachment.file_size or 0) > MAX_FILE_BYTES:
-        await reply(message, f"{ui.e('warning')} Файл больше 20 МБ, Telegram не даёт боту его скачать. "
-                             "Сожмите запись или разбейте её на части.")
+    limit = LOCAL_MAX_FILE_BYTES if s.config.local_mode else MAX_FILE_BYTES
+    if (attachment.file_size or 0) > limit:
+        hint = "Разбейте запись на части." if s.config.local_mode else "Сожмите запись или разбейте её на части."
+        await reply(message, f"{ui.e('warning')} Файл больше {limit // (1024 * 1024)} МБ, "
+                             f"Telegram не даёт боту его скачать. {hint}")
         return
 
     # While a download runs, nobody flushes the batch: the file may belong to it.
     data = context.user_data
     data["receiving"] = data.get("receiving", 0) + 1
+    path: Path | None = None
+    body: bytes | None = None
     try:
-        file = await attachment.get_file()
-        body = bytes(await file.download_as_bytearray())
+        file = await attachment.get_file(read_timeout=FILE_TIMEOUT)
+        path = _local_path(file)
+        if path is None or (name or "").lower().endswith(TEXT_EXTENSIONS) or (mime or "").startswith("text/plain"):
+            body = bytes(await file.download_as_bytearray())
+            path = None
     except TelegramError:
         log.exception("Could not download a file")
-        body = None
+    except OSError:
+        log.exception("Could not read a file from the local Bot API server")
     finally:
         data["receiving"] -= 1
 
-    if body is None:
+    if body is None and path is None:
         await reply(message, f"{ui.e('warning')} Не получилось скачать файл. Пришлите его ещё раз.")
     elif (name or "").lower().endswith(TEXT_EXTENSIONS) or (mime or "").startswith("text/plain"):
         data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=_decode(body)), name or "Текст"))
-    elif not message.document or is_media(name, mime) or sniff(body):
+    elif not message.document or is_media(name, mime) or sniff(body if body is not None else _head(path)):
         # A document without a telling name or type may still be a recording: the header decides.
-        source = Source(audio=body, name=name, mime=mime)
+        source = Source(audio=body, name=name, mime=mime, path=path)
         data.setdefault("batch", []).append(Incoming(message.message_id, source, _describe(message, name)))
     else:
         await reply(message, f"{ui.e('warning')} Не понимаю этот файл. Пришлите аудио, видео или текст в формате .txt.")
@@ -630,9 +653,14 @@ def build_services(config: Config) -> Services:
 
 
 def build_application(config: Config) -> Application:
-    application = (
-        Application.builder().token(config.telegram_token).concurrent_updates(True).post_init(_post_init).build()
-    )
+    builder = Application.builder().token(config.telegram_token).concurrent_updates(True).post_init(_post_init)
+    if config.local_mode:
+        builder = (
+            builder.base_url(f"{config.telegram_api_url}/bot")
+            .base_file_url(f"{config.telegram_api_url}/file/bot")
+            .local_mode(True)
+        )
+    application = builder.build()
     application.bot_data["services"] = build_services(config)
     application.add_handler(TypeHandler(Update, gate), group=-1)
     application.add_handler(CommandHandler("start", on_start))

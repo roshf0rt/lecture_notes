@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from .audio import AudioError, prepare
@@ -28,10 +29,12 @@ class Source:
     audio: bytes | None = None
     name: str | None = None
     mime: str | None = None
+    # A recording already on disk (local Bot API server), used instead of audio.
+    path: Path | None = None
 
     @property
     def is_audio(self) -> bool:
-        return self.audio is not None
+        return self.audio is not None or self.path is not None
 
 
 class Model(Protocol):
@@ -108,7 +111,7 @@ class NotesPipeline:
 
     async def _transcribe(self, source: Source) -> str:
         try:
-            audio, name = await prepare(source.audio, source.name, source.mime, inline_limit=INLINE_LIMIT_BYTES)
+            audio, name = await prepare(source.audio, source.name, source.mime, inline_limit=INLINE_LIMIT_BYTES, path=source.path)
         except AudioError as error:
             raise GeminiError(str(error)) from error
         return await self._model.transcribe(audio, name)

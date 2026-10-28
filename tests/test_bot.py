@@ -298,14 +298,18 @@ def test_forgetkey_removes_all_keys(tmp_path):
 # --- jobs -------------------------------------------------------------------------------
 
 
-def _document(body: bytes, name: str, mime: str):
+def _document(body: bytes, name: str, mime: str, *, on_disk=None, size=None):
+    """A Telegram document. With on_disk, the file is where a local Bot API server would have put it."""
     async def download():
         return bytearray(body)
 
-    async def get_file():
-        return SimpleNamespace(download_as_bytearray=download)
+    async def get_file(**kwargs):
+        if on_disk is not None:
+            on_disk.write_bytes(body)
+        return SimpleNamespace(download_as_bytearray=download, file_path=str(on_disk) if on_disk else "documents/f.bin")
 
-    return SimpleNamespace(file_name=name, mime_type=mime, file_size=len(body), get_file=get_file)
+    return SimpleNamespace(file_name=name, mime_type=mime, file_size=size if size is not None else len(body),
+                           get_file=get_file)
 
 
 def _voice(duration=75):
@@ -630,3 +634,52 @@ def test_queue_has_a_limit_per_user(tmp_path, monkeypatch):
                                              (11, "конспектов"), (21, "конспект")])
 def test_notes_are_counted_in_russian(count, word):
     assert bot._notes(count) == f"{count} {word}"
+
+
+def test_files_over_20_mb_are_refused_by_the_cloud_api_with_a_hint(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    big = _document(b"OggS" + b"\x00" * 60, "lecture.ogg", "audio/ogg", size=25 * 1024 * 1024)
+    message = FakeMessage(document=big)
+    h.run(on_media, 5, message=message)
+    assert "больше 20 МБ" in message.replies[-1]["text"] and "Сожмите" in message.replies[-1]["text"]
+    assert not h.calls
+
+
+def _local_harness(tmp_path):
+    h = Harness(tmp_path)
+    h.services.config = Config(telegram_token="t", gemini_model="m", data_dir=tmp_path, allowed_user_ids=frozenset(),
+                               admin_ids=frozenset({ADMIN}), telegram_api_url="http://127.0.0.1:8081")
+    h.services.keys.add(5, KEY)
+    return h
+
+
+def test_local_server_lifts_the_limit_and_files_are_read_from_disk(tmp_path):
+    h = _local_harness(tmp_path)
+    on_disk = tmp_path / "file_1.ogg"
+    big = _document(b"OggS" + b"\x00" * 60, "lecture.ogg", "audio/ogg", on_disk=on_disk, size=90 * 1024 * 1024)
+    message = FakeMessage(document=big)
+    h.run(on_media, 5, message=message)
+    assert ("transcribe", KEY, "audio.ogg") in h.calls
+    assert "Конспект готов" in message.edits[-1]
+
+
+def test_local_server_still_has_an_upper_bound(tmp_path):
+    h = _local_harness(tmp_path)
+    message = FakeMessage(document=_document(b"x", "huge.wav", "audio/wav", size=3000 * 1024 * 1024))
+    h.run(on_media, 5, message=message)
+    assert "больше 2000 МБ" in message.replies[-1]["text"] and "Разбейте" in message.replies[-1]["text"]
+
+
+def test_three_big_parts_merge_into_one_note_without_loading_them(tmp_path):
+    h = _local_harness(tmp_path)
+    parts = []
+    for number in range(3):
+        document = _document(b"OggS" + b"\x00" * 60, f"part{number}.ogg", "audio/ogg", on_disk=tmp_path / f"f{number}.ogg",
+                             size=80 * 1024 * 1024)
+        parts.append(FakeMessage(document=document, message_id=20 + number))
+    question = _question(h, 5, parts)
+    assert "Пришло файлов: 3" in question["text"]
+    _answer(h, 5, question, "merge")
+    assert [call[0] for call in h.calls].count("transcribe") == 3
+    assert [call[0] for call in h.calls].count("write") == 1

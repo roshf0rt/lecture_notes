@@ -28,6 +28,12 @@ class Config:
     allowed_user_ids: frozenset[int]
     admin_ids: frozenset[int] = frozenset()
     max_parallel_jobs: int = 3
+    # Address of a local Bot API server (lifts the 20 MB download limit). Empty = Telegram's cloud API.
+    telegram_api_url: str = ""
+
+    @property
+    def local_mode(self) -> bool:
+        return bool(self.telegram_api_url)
 
     @classmethod
     def from_env(cls) -> Config:
@@ -39,4 +45,5 @@ class Config:
             allowed_user_ids=_user_ids("ALLOWED_USER_IDS"),
             admin_ids=_user_ids("ADMIN_IDS"),
             max_parallel_jobs=max(1, int(env.get("MAX_PARALLEL_JOBS", "3") or 3)),
+            telegram_api_url=env.get("TELEGRAM_API_URL", "").strip().rstrip("/"),
         )

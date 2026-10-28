@@ -62,6 +62,7 @@ def home_view(ui: Ui, s: Services) -> tuple[str, InlineKeyboardMarkup]:
             f"{ui.e('model')} Модель: <code>{html(options.model)}</code>",
             f"{ui.e('unlocked' if options.access == 'open' else 'locked')} Доступ: {ACCESS_TITLES[options.access]}",
             f"{ui.e('key')} Общие ключи: {s.keys.count(POOL)}, раздача {_on(options.shared_keys)}",
+            f"{ui.e('clip')} Файлы: до {'2 ГБ (локальный Bot API)' if s.config.local_mode else '20 МБ (облачный Bot API)'}",
         ]
         + ([f"{ui.e('sleep')} <b>Включено обслуживание:</b> бот отвечает только админам."] if options.maintenance else [])
     )

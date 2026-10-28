@@ -165,3 +165,27 @@ def test_a_failing_part_is_named_in_the_error():
 def test_enabled_blocks_without_material_are_reported_as_skipped():
     result, _ = _run(NotesPipeline(FakeModel()), UserSettings(blocks=("takeaways", "examples")), text=LONG_TRANSCRIPT)
     assert result.skipped == ("Примеры и кейсы",)
+
+
+def test_config_reads_the_local_api_address(monkeypatch):
+    from notes_bot.config import Config
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1:a")
+    monkeypatch.delenv("TELEGRAM_API_URL", raising=False)
+    assert Config.from_env().local_mode is False
+    monkeypatch.setenv("TELEGRAM_API_URL", " http://127.0.0.1:8081/ ")
+    config = Config.from_env()
+    assert config.local_mode and config.telegram_api_url == "http://127.0.0.1:8081"
+
+
+def test_application_talks_to_the_local_server_when_configured(tmp_path):
+    from notes_bot.bot import build_application
+    from notes_bot.config import Config
+
+    config = Config("123:abc", "m", tmp_path, frozenset(), telegram_api_url="http://127.0.0.1:8081")
+    bot = build_application(config).bot
+    assert bot.base_url == "http://127.0.0.1:8081/bot123:abc"
+    assert bot.base_file_url == "http://127.0.0.1:8081/file/bot123:abc"
+    assert bot.local_mode is True
+    cloud = build_application(Config("123:abc", "m", tmp_path / "c", frozenset())).bot
+    assert cloud.base_url == "https://api.telegram.org/bot123:abc" and cloud.local_mode is False

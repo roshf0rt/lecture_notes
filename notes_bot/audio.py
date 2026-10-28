@@ -131,11 +131,19 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-async def _to_opus(data: bytes, extension: str) -> bytes:
+def _read_head(path: Path) -> bytes:
+    with path.open("rb") as file:
+        return file.read(4096)
+
+
+async def _to_opus(data: bytes | None, path: Path | None, extension: str) -> bytes:
+    """Convert to mono Opus. A file that is already on disk is read by ffmpeg in place, not copied."""
     with tempfile.TemporaryDirectory(prefix="notes-bot-") as folder:
-        source = Path(folder) / f"input{extension}"
+        source = path
+        if source is None:
+            source = Path(folder) / f"input{extension}"
+            source.write_bytes(data)
         target = Path(folder) / "output.ogg"
-        source.write_bytes(data)
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", "24k",
@@ -155,23 +163,40 @@ async def _to_opus(data: bytes, extension: str) -> bytes:
         return target.read_bytes()
 
 
-async def prepare(data: bytes, filename: str | None, mime_type: str | None = None, *, inline_limit: int) -> tuple[bytes, str]:
+async def prepare(
+    data: bytes | None,
+    filename: str | None,
+    mime_type: str | None = None,
+    *,
+    inline_limit: int,
+    path: Path | None = None,
+) -> tuple[bytes, str]:
     """Return audio bytes and a file name whose extension matches the real format.
 
-    Small files in a format Gemini reads go as they are. Video, rare formats and big
-    files are converted to Opus when ffmpeg is installed.
+    The recording comes either as bytes or as a path to a file on disk (big files from a
+    local Bot API server are never loaded whole into memory). Small files in a format
+    Gemini reads go as they are. Video, rare formats and big files are converted to Opus
+    when ffmpeg is installed.
     """
-    extension = detect(data, filename, mime_type)
+    if data is None and path is None:
+        raise AudioError("Нет записи для обработки.")
+    head = data[:4096] if data is not None else await asyncio.to_thread(_read_head, path)
+    size = len(data) if data is not None else path.stat().st_size
+    extension = detect(head, filename, mime_type)
     if extension is None:
         raise AudioError(f"Не понимаю формат записи. Подойдут {SUPPORTED_HINT}.")
-    if extension in INLINE_FRIENDLY and len(data) <= inline_limit:
-        return data, f"audio{extension}"
+
+    async def whole() -> bytes:
+        return data if data is not None else await asyncio.to_thread(path.read_bytes)
+
+    if extension in INLINE_FRIENDLY and size <= inline_limit:
+        return await whole(), f"audio{extension}"
     if ffmpeg_available():
         try:
-            return await _to_opus(data, extension), "audio.ogg"
+            return await _to_opus(data, path, extension), "audio.ogg"
         except AudioError:
             if extension not in GEMINI_MIME:
                 raise
     if extension in GEMINI_MIME:
-        return data, f"audio{extension}"
+        return await whole(), f"audio{extension}"
     raise AudioError(f"Формат {extension} нужно сконвертировать, а ffmpeg на сервере не установлен.")

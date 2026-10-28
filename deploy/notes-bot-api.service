@@ -1,0 +1,22 @@
+[Unit]
+Description=Local Telegram Bot API server (lets the bot download files over 20 MB)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+# api.env holds TELEGRAM_API_ID and TELEGRAM_API_HASH (mode 600).
+EnvironmentFile=/etc/notes-bot/api.env
+ExecStartPre=-/usr/bin/docker rm -f notes-bot-api
+# Listens on the server itself only: nothing outside can reach it.
+ExecStart=/usr/bin/docker run --rm --name notes-bot-api \
+    -p 127.0.0.1:8081:8081 \
+    -e TELEGRAM_API_ID -e TELEGRAM_API_HASH -e TELEGRAM_LOCAL=1 \
+    -v /var/lib/telegram-bot-api:/var/lib/telegram-bot-api \
+    aiogram/telegram-bot-api:latest
+ExecStop=/usr/bin/docker stop notes-bot-api
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
