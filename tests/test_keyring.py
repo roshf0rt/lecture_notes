@@ -4,6 +4,7 @@ from datetime import datetime
 import pytest
 
 from notes_bot.gemini import AUTH, MODEL, OVERLOADED, QUOTA, GeminiError
+from notes_bot import keyring
 from notes_bot.keyring import QUOTA_ZONE, KeyRing, RotatingModel, seconds_to_quota_reset
 
 
@@ -75,11 +76,12 @@ def test_least_recently_used_key_goes_first():
     assert ring.order(["a", "b", "c"]) == ["c", "a", "b"]
 
 
-def test_daily_quota_rests_until_pacific_midnight():
+def test_daily_quota_rests_until_pacific_midnight(monkeypatch):
+    monkeypatch.setattr(keyring, "seconds_to_quota_reset", lambda: 7200.0)
     ring = KeyRing(Clock())
     model, _, _ = _model(["a", "b"], {"a": [GeminiError("limit", QUOTA, daily=True)]}, ring)
     asyncio.run(model.write("t", ("takeaways",), "medium"))
-    assert ring.resting("a") > 60
+    assert ring.resting("a") == 7200
 
 
 def test_rejected_key_is_skipped():

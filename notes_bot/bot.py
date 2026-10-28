@@ -564,6 +564,12 @@ async def _send(message: Message, result: Result, settings: UserSettings, from_a
         await message.reply_document(
             document=io.BytesIO(result.transcript.encode("utf-8")), filename=f"{name} — расшифровка.txt"
         )
+    if result.skipped:
+        await message.reply_text(
+            "В материале не нашлось содержания для блоков: " + ", ".join(html(title) for title in result.skipped)
+            + ". Поэтому их нет в конспекте. Включить или выключить блоки можно в /settings.",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 # --- application ------------------------------------------------------------------------

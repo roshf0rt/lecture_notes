@@ -160,3 +160,8 @@ def test_a_failing_part_is_named_in_the_error():
     sources = [Source(audio=b"ogg", name="a.ogg"), Source(audio=b"bad", name="b.ogg")]
     with pytest.raises(GeminiError, match=r"Файл 2 \(b\.ogg\): запись повреждена"):
         _run(NotesPipeline(BrokenSecond()), UserSettings(), sources=sources)
+
+
+def test_enabled_blocks_without_material_are_reported_as_skipped():
+    result, _ = _run(NotesPipeline(FakeModel()), UserSettings(blocks=("takeaways", "examples")), text=LONG_TRANSCRIPT)
+    assert result.skipped == ("Примеры и кейсы",)
