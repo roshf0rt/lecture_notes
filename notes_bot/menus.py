@@ -1,23 +1,92 @@
+"""Texts and keyboards for users: main menu, settings and Gemini keys. Texts are HTML."""
 from __future__ import annotations
 
 from dataclasses import replace
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
-from .blocks import BLOCKS, LENGTH_BY_ID, LENGTHS
-from .settings import OUTPUTS, UserSettings
+from .blocks import BLOCKS, DEFAULT_BLOCKS, LENGTH_BY_ID, LENGTHS
+from .keyring import KeyRing
+from .keys import StoredKey
+from .settings import LANGUAGES, OUTPUTS, UserSettings
 from .themes import CUSTOM, THEMES
+from .ui import Ui, html
 
 OUTPUT_TITLES = {"pdf": "PDF-файл", "tg": "Сообщения в Telegram"}
-BACK = InlineKeyboardButton("⬅️ Назад", callback_data="st:menu:main")
+OUTPUT_ICONS = {"pdf": "pdf", "tg": "message"}
+LANGUAGE_TITLES = {"auto": "Как в материале", "ru": "Всегда по-русски"}
+BLOCK_PRESETS = {
+    "all": tuple(block.id for block in BLOCKS),
+    "default": DEFAULT_BLOCKS,
+    "min": ("main_idea", "concepts", "takeaways"),
+}
+AI_STUDIO = "https://aistudio.google.com/apikey"
+
+# Reply keyboard labels. A press arrives as plain text, with or without a leading emoji.
+MENU_SETTINGS = "Настройки"
+MENU_KEYS = "Ключи Gemini"
+MENU_HELP = "Помощь"
+MENU_ADMIN = "Админка"
+MENU_LABELS = (MENU_SETTINGS, MENU_KEYS, MENU_HELP, MENU_ADMIN)
 
 
-def _button(text: str, data: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(text, callback_data=data)
+def menu_label(text: str) -> str | None:
+    """Which reply keyboard button was pressed, if any."""
+    stripped = text.strip()
+    for label in MENU_LABELS:
+        prefix = stripped.removesuffix(label)
+        # Without premium icons the button text starts with an emoji; letters there mean ordinary text.
+        if prefix != stripped and len(prefix) <= 4 and not any(char.isalnum() for char in prefix):
+            return label
+    return None
 
 
-def _mark(selected: bool, text: str) -> str:
-    return f"✅ {text}" if selected else text
+def main_keyboard(ui: Ui, is_admin: bool) -> ReplyKeyboardMarkup:
+    rows = [
+        [ui.key("settings", MENU_SETTINGS), ui.key("key", MENU_KEYS)],
+        [ui.key("help", MENU_HELP)],
+    ]
+    if is_admin:
+        rows[1].append(ui.key("admin", MENU_ADMIN))
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True,
+                               input_field_placeholder="Пришлите запись или текст лекции")
+
+
+def welcome(ui: Ui, has_key: bool, shared: bool) -> str:
+    lines = [
+        f"{ui.e('hello')} <b>Привет! Я делаю конспекты лекций.</b>",
+        "",
+        f"{ui.e('mic')} Пришлите голосовое, аудио или видео (до 20 МБ, любой частый формат: ogg, mp3, aac, m4a, wav, mp4…)",
+        f"{ui.e('transcript')} или текст расшифровки сообщением либо файлом .txt.",
+        "",
+        f"{ui.e('settings')} В настройках выбираются формат (PDF или сообщения), длина, язык, цвета и блоки конспекта.",
+    ]
+    if not has_key:
+        lines += ["", f"{ui.e('key')} <b>Сначала нужен ключ Gemini.</b> Он бесплатный: создайте его в "
+                      f'<a href="{AI_STUDIO}">Google AI Studio</a> и пришлите сюда одним сообщением.']
+        if shared:
+            lines.append("Пока ключа нет, бот работает на общих ключах владельца.")
+    return "\n".join(lines)
+
+
+def help_text(ui: Ui) -> str:
+    return "\n".join(
+        [
+            f"{ui.e('help')} <b>Как пользоваться</b>",
+            "",
+            f"{ui.e('mic')} <b>Запись.</b> Голосовое, аудио, видео или файл до 20 МБ. Формат определяется по содержимому, "
+            "поэтому подойдут и файлы без расширения. Видео и редкие форматы бот сам переводит в аудио.",
+            f"{ui.e('transcript')} <b>Текст.</b> Сообщением или файлом .txt, от 100 знаков.",
+            f"{ui.e('key')} <b>Ключи.</b> Можно добавить несколько ключей Gemini: когда у одного кончается лимит, "
+            "бот переходит на следующий. Квота общая на проект Google, поэтому ключи нужны из разных проектов или аккаунтов.",
+            f"{ui.e('settings')} <b>Настройки.</b> Формат, длина, язык, оформление PDF, блоки, расшифровка отдельным файлом.",
+            "",
+            "Команды: /settings, /keys, /help.",
+        ]
+    )
+
+
+# --- settings ---------------------------------------------------------------------------
 
 
 def _theme_name(settings: UserSettings) -> str:
@@ -33,64 +102,141 @@ def apply_choice(settings: UserSettings, field: str, value: str) -> UserSettings
         return replace(settings, length=value)
     if field == "theme" and value in THEMES:
         return replace(settings, theme=value)
+    if field == "language" and value in LANGUAGES:
+        return replace(settings, language=value)
     return settings
 
 
-def build_view(name: str, settings: UserSettings) -> tuple[str, InlineKeyboardMarkup]:
+def _choice(ui: Ui, selected: bool, icon: str | None, text: str, data: str):
+    return ui.button("ok" if selected else icon, text, data, style="success" if selected else None)
+
+
+def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, InlineKeyboardMarkup]:
+    back = ui.button("back", "Назад", "st:menu:main")
+
     if name == "output":
-        rows = [[_button(_mark(settings.output == key, title), f"st:set:output:{key}")] for key, title in OUTPUT_TITLES.items()]
-        return "Как присылать конспект:", InlineKeyboardMarkup([*rows, [BACK]])
+        rows = [[_choice(ui, settings.output == key, OUTPUT_ICONS[key], title, f"st:set:output:{key}")]
+                for key, title in OUTPUT_TITLES.items()]
+        text = (f"{ui.e('format')} <b>Как присылать конспект</b>\n\n"
+                "PDF — аккуратный документ с цветными блоками. Сообщения — тот же конспект прямо в чате, "
+                "длинный режется на части по 4096 знаков.")
+        return text, InlineKeyboardMarkup([*rows, [back]])
 
     if name == "length":
-        rows = [[_button(_mark(settings.length == length.id, length.title), f"st:set:length:{length.id}")] for length in LENGTHS]
-        text = f"Длина конспекта:\n{LENGTH_BY_ID[settings.length].guidance}"
-        return text, InlineKeyboardMarkup([*rows, [BACK]])
+        rows = [[_choice(ui, settings.length == length.id, None, length.title, f"st:set:length:{length.id}")]
+                for length in LENGTHS]
+        text = f"{ui.e('length')} <b>Длина конспекта</b>\n\n{html(LENGTH_BY_ID[settings.length].guidance)}"
+        return text, InlineKeyboardMarkup([*rows, [back]])
+
+    if name == "language":
+        rows = [[_choice(ui, settings.language == key, None, title, f"st:set:language:{key}")]
+                for key, title in LANGUAGE_TITLES.items()]
+        text = (f"{ui.e('language')} <b>Язык конспекта</b>\n\n"
+                "«Как в материале» — конспект на языке лекции. «Всегда по-русски» — перевод, "
+                "если лекция на другом языке.")
+        return text, InlineKeyboardMarkup([*rows, [back]])
 
     if name == "theme":
-        presets = [
-            _button(_mark(settings.theme == theme.id, theme.title), f"st:set:theme:{theme.id}")
-            for theme in THEMES.values()
-        ]
+        presets = [_choice(ui, settings.theme == theme.id, None, theme.title, f"st:set:theme:{theme.id}")
+                   for theme in THEMES.values()]
         is_custom = settings.theme == CUSTOM
-        custom_label = f"Свой цвет ({settings.custom_color})" if is_custom and settings.custom_color else "Свой цвет"
-        rows = [presets[i : i + 2] for i in range(0, len(presets), 2)]
-        rows.append([_button(_mark(is_custom, custom_label), "st:color")])
-        text = (
-            "Оформление PDF: цвета заголовков, акцентов и таблиц.\n"
-            "В сообщениях Telegram оформление передаётся эмодзи и жирным шрифтом."
-        )
-        return text, InlineKeyboardMarkup([*rows, [BACK]])
+        custom_label = f"Свой цвет {settings.custom_color}" if is_custom and settings.custom_color else "Свой цвет"
+        rows = [presets[i: i + 2] for i in range(0, len(presets), 2)]
+        rows.append([_choice(ui, is_custom, "pipette", custom_label, "st:color")])
+        text = (f"{ui.e('theme')} <b>Оформление PDF</b>\n\n"
+                "Цвета заголовков, акцентов, плашек и таблиц. Свой цвет задаётся HEX-кодом, остальные оттенки бот подберёт сам.")
+        return text, InlineKeyboardMarkup([*rows, [back]])
 
     if name == "blocks":
-        rows = [
-            [_button(_mark(block.id in settings.blocks, f"{block.icon} {block.title}"), f"st:blk:{block.id}")]
-            for block in BLOCKS
-        ]
-        return "Блоки конспекта. Нажмите, чтобы включить или выключить:", InlineKeyboardMarkup([*rows, [BACK]])
+        rows = [[ui.button("ok" if block.id in settings.blocks else "no", block.title,
+                           f"st:blk:{block.id}")] for block in BLOCKS]
+        rows.append([ui.button(None, "Все", "st:preset:all"), ui.button(None, "Стандарт", "st:preset:default"),
+                     ui.button(None, "Минимум", "st:preset:min")])
+        text = (f"{ui.e('blocks')} <b>Блоки конспекта</b>\n\n"
+                f"Включено {len(settings.blocks)} из {len(BLOCKS)}. Нажмите на блок, чтобы включить или выключить его.")
+        return text, InlineKeyboardMarkup([*rows, [back]])
 
     text = "\n".join(
         [
-            "⚙️ Настройки конспектов",
+            f"{ui.e('settings')} <b>Настройки конспектов</b>",
             "",
-            f"Формат: {OUTPUT_TITLES[settings.output]}",
-            f"Длина: {LENGTH_BY_ID[settings.length].title}",
-            f"Оформление: {_theme_name(settings)}",
-            f"Блоков включено: {len(settings.blocks)} из {len(BLOCKS)}",
+            f"{ui.e(OUTPUT_ICONS[settings.output])} Формат: <b>{OUTPUT_TITLES[settings.output]}</b>",
+            f"{ui.e('length')} Длина: <b>{LENGTH_BY_ID[settings.length].title}</b>",
+            f"{ui.e('language')} Язык: <b>{LANGUAGE_TITLES[settings.language]}</b>",
+            f"{ui.e('theme')} Оформление PDF: <b>{html(_theme_name(settings))}</b>",
+            f"{ui.e('blocks')} Блоки: <b>{len(settings.blocks)} из {len(BLOCKS)}</b>",
+            f"{ui.e('transcript')} Расшифровка файлом: <b>{'да' if settings.send_transcript else 'нет'}</b>",
         ]
     )
     rows = [
-        [_button(f"Формат: {OUTPUT_TITLES[settings.output]}", "st:menu:output")],
-        [_button(f"Длина: {LENGTH_BY_ID[settings.length].title}", "st:menu:length")],
-        [_button(f"Оформление: {_theme_name(settings)}", "st:menu:theme")],
-        [_button("Блоки конспекта", "st:menu:blocks")],
-        [_button("Готово", "st:close")],
+        [ui.button(OUTPUT_ICONS[settings.output], "Формат", "st:menu:output"),
+         ui.button("length", "Длина", "st:menu:length")],
+        [ui.button("language", "Язык", "st:menu:language"), ui.button("theme", "Оформление", "st:menu:theme")],
+        [ui.button("blocks", "Блоки конспекта", "st:menu:blocks")],
+        [ui.button("transcript", f"Расшифровка файлом: {'вкл' if settings.send_transcript else 'выкл'}", "st:tr")],
+        [ui.button("reset", "Сбросить", "st:reset", style="danger"),
+         ui.button("ok", "Готово", "st:close", style="success")],
     ]
     return text, InlineKeyboardMarkup(rows)
 
 
-def color_prompt() -> tuple[str, InlineKeyboardMarkup]:
-    text = (
-        "Пришлите цвет в формате HEX, например #3B82F6.\n"
-        "Цвет должен быть достаточно тёмным, чтобы читаться на белом фоне."
-    )
-    return text, InlineKeyboardMarkup([[_button("⬅️ Назад", "st:menu:theme")]])
+def color_prompt(ui: Ui) -> tuple[str, InlineKeyboardMarkup]:
+    text = (f"{ui.e('pipette')} Пришлите цвет в формате HEX, например <code>#3B82F6</code>.\n"
+            "Цвет должен быть достаточно тёмным, чтобы читаться на белом фоне.")
+    return text, InlineKeyboardMarkup([[ui.button("back", "Назад", "st:menu:theme")]])
+
+
+# --- keys -------------------------------------------------------------------------------
+
+
+def _rest_note(seconds: float) -> str:
+    if seconds <= 0:
+        return ""
+    if seconds < 120:
+        return " · отдыхает ~1 мин"
+    if seconds < 7200:
+        return f" · отдыхает ~{round(seconds / 60)} мин"
+    return f" · отдыхает ~{round(seconds / 3600)} ч"
+
+
+def keys_view(ui: Ui, keys: list[StoredKey], ring: KeyRing, limit: int, *, prefix: str = "ky",
+              title: str = "Ваши ключи Gemini", back: str | None = None,
+              statuses: dict[int, str] | None = None) -> tuple[str, InlineKeyboardMarkup]:
+    statuses = statuses or {}
+    lines = [f"{ui.e('key')} <b>{title}</b>", ""]
+    if keys:
+        for number, key in enumerate(keys, start=1):
+            status = statuses.get(key.id, "")
+            lines.append(f"{number}. <code>{html(key.masked)}</code>{_rest_note(ring.resting(key.value))}{status}")
+        lines += ["", "Бот берёт ключи по очереди и пропускает те, у которых кончился лимит."]
+    else:
+        lines.append("Ключей пока нет.")
+    lines += ["", f'Новый ключ: <a href="{AI_STUDIO}">Google AI Studio</a>. Для запаса нужны ключи из разных проектов '
+              "или аккаунтов: у ключей одного проекта общая квота."]
+
+    rows = [[ui.button("trash", f"Удалить {number}. {key.masked}", f"{prefix}:del:{key.id}")]
+            for number, key in enumerate(keys, start=1)]
+    actions = []
+    if len(keys) < limit:
+        actions.append(ui.button("add", "Добавить", f"{prefix}:add", style="primary"))
+    if keys:
+        actions.append(ui.button("search", "Проверить", f"{prefix}:check"))
+    if actions:
+        rows.append(actions)
+    if keys:
+        rows.append([ui.button("trash", "Удалить все", f"{prefix}:clear", style="danger")])
+    if back:
+        rows.append([ui.button("back", "Назад", back)])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def key_prompt(ui: Ui, back: str) -> tuple[str, InlineKeyboardMarkup]:
+    text = (f"{ui.e('key')} Пришлите ключ Gemini одним сообщением. Можно несколько, каждый с новой строки.\n\n"
+            f'Получить ключ: <a href="{AI_STUDIO}">Google AI Studio</a>')
+    return text, InlineKeyboardMarkup([[ui.button("back", "Назад", back)]])
+
+
+def confirm_clear(ui: Ui, prefix: str) -> tuple[str, InlineKeyboardMarkup]:
+    text = f"{ui.e('warning')} Удалить все ключи? Это нельзя отменить."
+    return text, InlineKeyboardMarkup([[ui.button("trash", "Да, удалить", f"{prefix}:clear:yes", style="danger"),
+                                        ui.button("back", "Отмена", f"{prefix}:show")]])

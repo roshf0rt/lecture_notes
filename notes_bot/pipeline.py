@@ -5,7 +5,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from .gemini import GeminiError
+from .audio import AudioError, prepare
+from .gemini import INLINE_LIMIT_BYTES, GeminiError
 from .notes import NoteDocument
 from .render_pdf import render_pdf
 from .render_tg import render_messages
@@ -22,12 +23,13 @@ class Model(Protocol):
 
     async def transcribe(self, audio: bytes, filename: str) -> str: ...
 
-    async def write(self, transcript: str, enabled: tuple[str, ...], length_id: str) -> NoteDocument: ...
+    async def write(self, transcript: str, enabled: tuple[str, ...], length_id: str, language: str = "auto") -> NoteDocument: ...
 
 
 @dataclass(frozen=True)
 class Result:
     document: NoteDocument
+    transcript: str
     pdf: bytes | None = None
     messages: list[str] | None = None
 
@@ -44,10 +46,16 @@ class NotesPipeline:
         text: str | None = None,
         audio: bytes | None = None,
         audio_name: str | None = None,
+        audio_mime: str | None = None,
+        premium: bool = False,
     ) -> Result:
         if audio is not None:
             await progress("transcribing")
-            text = await self._model.transcribe(audio, audio_name or "audio.ogg")
+            try:
+                audio, audio_name = await prepare(audio, audio_name, audio_mime, inline_limit=INLINE_LIMIT_BYTES)
+            except AudioError as error:
+                raise GeminiError(str(error)) from error
+            text = await self._model.transcribe(audio, audio_name)
 
         if text is None or len(text.strip()) < MIN_TEXT_CHARS:
             raise GeminiError("В материале слишком мало текста для конспекта.")
@@ -55,11 +63,12 @@ class NotesPipeline:
             raise GeminiError("Материал слишком длинный. Разбейте его на несколько частей.")
 
         await progress("writing")
-        document = (await self._model.write(text, settings.blocks, settings.length)).only(settings.blocks)
+        written = await self._model.write(text, settings.blocks, settings.length, settings.language)
+        document = written.only(settings.blocks)
 
         await progress("rendering")
         if settings.output == "pdf":
             theme = get_theme(settings.theme, settings.custom_color)
             pdf = await asyncio.to_thread(render_pdf, document, theme)
-            return Result(document, pdf=pdf)
-        return Result(document, messages=render_messages(document))
+            return Result(document, text, pdf=pdf)
+        return Result(document, text, messages=render_messages(document, premium=premium))

@@ -14,7 +14,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq python3 python3-venv libpango-1.0-0 libpangoft2-1.0-0 fonts-inter fonts-noto-color-emoji
+apt-get install -y -qq python3 python3-venv ffmpeg libpango-1.0-0 libpangoft2-1.0-0 fonts-inter fonts-noto-color-emoji
 # Optional: silences a WeasyPrint warning. Not every release ships this package.
 apt-get install -y -qq libharfbuzz-subset0 || echo "note: libharfbuzz-subset0 is not available, continuing"
 
@@ -28,5 +28,8 @@ chmod -R a+rX "$APP_DIR"
 
 install -m 644 "$APP_DIR/deploy/notes-bot.service" /etc/systemd/system/notes-bot.service
 systemctl daemon-reload
-systemctl enable --now notes-bot
+systemctl enable --quiet notes-bot
+# restart, not start: on an update the old code is still running
+systemctl restart notes-bot
+sleep 3
 systemctl --no-pager status notes-bot | head -15

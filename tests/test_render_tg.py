@@ -71,3 +71,11 @@ def test_concept_with_why_renders_definition_and_reason():
 def test_plain_text_fallback_strips_markup_but_keeps_words():
     markdown = "📚 *Заголовок*\n>⚠️ Важно\\. Цена 1\\-2"
     assert plain_text(markdown) == "📚 Заголовок\n⚠️ Важно. Цена 1-2"
+
+
+def test_premium_headings_use_custom_emoji_and_plain_fallback_drops_them(sample_doc):
+    messages = render_messages(sample_doc, premium=True)
+    joined = "\n".join(messages)
+    assert "![🧠](tg://emoji?id=5864019342873598613)" in joined
+    assert "tg://emoji" not in plain_text(joined)
+    assert "tg://emoji" not in "\n".join(render_messages(sample_doc))

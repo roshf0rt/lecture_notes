@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from google.genai import types
 
-from notes_bot.gemini import INLINE_LIMIT_BYTES, GeminiClient, GeminiError, is_media_name
+from notes_bot.gemini import AUTH, INLINE_LIMIT_BYTES, QUOTA, GeminiClient, GeminiError
 
 
 class FakeGeminiServer:
@@ -170,9 +170,33 @@ def test_unsupported_format_is_rejected_before_any_request(make_server):
     assert server.requests == []
 
 
-@pytest.mark.parametrize(("name", "expected"), [("voice.ogg", True), ("lecture.MP3", True), ("notes.pdf", False)])
-def test_is_media_name(name, expected):
-    assert is_media_name(name) is expected
+def test_daily_quota_error_carries_its_kind_and_retry_hint(make_server):
+    body = {
+        "error": {
+            "code": 429,
+            "message": "Quota exceeded",
+            "status": "RESOURCE_EXHAUSTED",
+            "details": [
+                {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                 "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]},
+                {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "37s"},
+            ],
+        }
+    }
+    server = make_server(429, body)
+    with pytest.raises(GeminiError) as caught:
+        asyncio.run(_client(server).check_key())
+    assert caught.value.kind == QUOTA
+    assert caught.value.daily is True
+    assert caught.value.retry_after == 37
+
+
+def test_aac_goes_inline_with_its_own_mime_type(make_server):
+    server = make_server(200, _reply("Расшифровка"))
+    asyncio.run(_client(server).transcribe(b"\xff\xf1aac", "audio.aac"))
+    parts = server.requests[0]["body"]["contents"][0]["parts"]
+    inline = next(_field(part, "inlineData", "inline_data") for part in parts if {"inlineData", "inline_data"} & part.keys())
+    assert _field(inline, "mimeType", "mime_type") == "audio/aac"
 
 
 def test_check_key_makes_a_tiny_generation_request(make_server):
@@ -194,5 +218,6 @@ def test_model_problems_get_their_own_messages(make_server, status, expected):
 def test_check_key_reports_a_rejected_key(make_server):
     body = {"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.", "status": "INVALID_ARGUMENT"}}
     server = make_server(400, body)
-    with pytest.raises(GeminiError, match="не принял ключ"):
+    with pytest.raises(GeminiError, match="не принял ключ") as caught:
         asyncio.run(_client(server).check_key())
+    assert caught.value.kind == AUTH

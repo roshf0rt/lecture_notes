@@ -12,11 +12,12 @@ def _required(name: str) -> str:
     return value
 
 
-def _user_ids(raw: str) -> frozenset[int]:
+def _user_ids(name: str) -> frozenset[int]:
+    raw = os.environ.get(name, "")
     try:
         return frozenset(int(item) for item in raw.replace(" ", "").split(",") if item)
     except ValueError as error:
-        raise SystemExit("ALLOWED_USER_IDS должен быть списком чисел через запятую.") from error
+        raise SystemExit(f"{name} должен быть списком чисел через запятую.") from error
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,8 @@ class Config:
     gemini_model: str
     data_dir: Path
     allowed_user_ids: frozenset[int]
+    admin_ids: frozenset[int] = frozenset()
+    max_parallel_jobs: int = 3
 
     @classmethod
     def from_env(cls) -> Config:
@@ -33,5 +36,7 @@ class Config:
             telegram_token=_required("TELEGRAM_BOT_TOKEN"),
             gemini_model=env.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip(),
             data_dir=Path(env.get("DATA_DIR", "data")),
-            allowed_user_ids=_user_ids(env.get("ALLOWED_USER_IDS", "")),
+            allowed_user_ids=_user_ids("ALLOWED_USER_IDS"),
+            admin_ids=_user_ids("ADMIN_IDS"),
+            max_parallel_jobs=max(1, int(env.get("MAX_PARALLEL_JOBS", "3") or 3)),
         )

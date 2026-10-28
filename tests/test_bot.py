@@ -1,45 +1,64 @@
 import asyncio
-from pathlib import Path
 from types import SimpleNamespace
 
-from notes_bot.bot import KEY_SAVED, NO_KEY, Services, on_forgetkey, on_media, on_setkey, on_settings_button, on_text
-from notes_bot.config import Config
-from notes_bot.gemini import GeminiError
-from notes_bot.keys import KeyVault
-from notes_bot.notes import NoteDocument
-from notes_bot.settings import SettingsStore, UserSettings
+import pytest
+from telegram.ext import ApplicationHandlerStop
 
-SAVED_KEY = "AIzaSyTestKeyValue1234567890abcdefghij"
-REJECTED_KEY = "AIzaSyTestKeyValue1234567890abcdefBAD"
+from notes_bot import admin
+from notes_bot.bot import gate, on_forgetkey, on_keys_button, on_media, on_settings_button, on_start, on_text
+from notes_bot.config import Config
+from notes_bot.gemini import QUOTA, GeminiError
+from notes_bot.keys import POOL, KeyVault
+from notes_bot.notes import NoteDocument
+from notes_bot.services import Services
+from notes_bot.settings import SettingsStore, UserSettings
+from notes_bot.storage import BotState, Options
+
+KEY = "AIzaSyTestKeyValue1234567890abcdefghij"
+KEY2 = "AQ.TestKeyValue1234567890abcdefghijklmnop"
+BAD_KEY = "AIzaSyTestKeyValue1234567890abcdefBAD"
+QUOTA_KEY = "AIzaSyTestKeyValue1234567890abcdeQUOTA"
 LONG_TEXT = "Лекция о рекламе и её признаках. " * 10
+ADMIN = 900
 
 
 class FakeModel:
-    def __init__(self, api_key: str, fail_write: Exception | None = None) -> None:
+    def __init__(self, api_key, model, log, fail_write=None):
         self.api_key = api_key
+        self.model = model
+        self.log = log
         self.fail_write = fail_write
 
-    async def check_key(self) -> None:
+    async def check_key(self):
         if self.api_key.endswith("BAD"):
-            raise GeminiError("Gemini не принял ключ или у него нет доступа к модели. Проверьте ключ в Google AI Studio.")
+            raise GeminiError("Gemini не принял ключ или у него нет доступа к модели.", "auth")
+        if self.model == "broken-model":
+            raise GeminiError("Выбранная модель Gemini сейчас недоступна.", "model")
 
     async def transcribe(self, audio, filename):
+        self.log.append(("transcribe", self.api_key, filename))
+        if self.api_key.endswith("QUOTA"):
+            raise GeminiError("лимит", QUOTA)
         return LONG_TEXT
 
-    async def write(self, transcript, enabled, length):
+    async def write(self, transcript, enabled, length, language="auto"):
+        self.log.append(("write", self.api_key, language))
         if self.fail_write is not None:
             raise self.fail_write
         return NoteDocument(title="Лекция", takeaways=["Главный вывод " * 4], questions=["Вопрос?"])
 
 
 class FakeMessage:
-    def __init__(self, text=None, document=None):
+    def __init__(self, text=None, document=None, voice=None, audio=None, message_id=1):
         self.text = text
         self.document = document
-        self.voice = None
-        self.audio = None
+        self.voice = voice
+        self.audio = audio
         self.video = None
         self.video_note = None
+        self.animation = None
+        self.chat_id = 1
+        self.message_id = message_id
         self.replies: list[dict] = []
         self.edits: list[str] = []
 
@@ -49,6 +68,9 @@ class FakeMessage:
 
     async def reply_document(self, document, filename=None, **kwargs):
         self.replies.append({"document": document.read(), "filename": filename})
+
+    def texts(self):
+        return [reply["text"] for reply in self.replies if "text" in reply] + self.edits
 
 
 class FakeStatus:
@@ -64,170 +86,402 @@ class FakeQuery:
         self.data = data
         self.from_user = SimpleNamespace(id=user_id)
         self.edited: list[tuple[str, object]] = []
+        self.answers: list[str] = []
 
-    async def answer(self, *args, **kwargs):
-        return None
+    async def answer(self, text=None, **kwargs):
+        self.answers.append(text)
 
     async def edit_message_text(self, text, reply_markup=None, **kwargs):
         self.edited.append((text, reply_markup))
 
 
-def _async(value):
-    async def call():
-        return value
+class FakeBot:
+    def __init__(self):
+        self.copied: list[int] = []
+        self.sent: list[tuple[int, str]] = []
 
-    return call
+    async def copy_message(self, chat_id, from_chat_id, message_id):
+        self.copied.append(chat_id)
+
+    async def send_message(self, chat_id, text, **kwargs):
+        self.sent.append((chat_id, text))
+
+    async def set_my_commands(self, *args, **kwargs):
+        return True
 
 
-def _context(tmp_path, *, fail_write: Exception | None = None, allowed=frozenset()):
-    config = Config(
-        telegram_token="t",
-        gemini_model="m",
-        data_dir=tmp_path,
-        allowed_user_ids=allowed,
-    )
-    services = Services(
+class FakeApplication:
+    def __init__(self, services):
+        self.bot_data = {"services": services}
+        self.tasks = []
+
+    def create_task(self, coroutine):
+        self.tasks.append(coroutine)
+
+
+def _setup(tmp_path, *, fail_write=None, allowed=frozenset(), options=None):
+    config = Config(telegram_token="t", gemini_model="m", data_dir=tmp_path, allowed_user_ids=allowed,
+                    admin_ids=frozenset({ADMIN}))
+    calls = []
+    s = Services(
         config=config,
         store=SettingsStore(tmp_path / "s.sqlite3"),
         keys=KeyVault(tmp_path),
-        make_model=lambda api_key: FakeModel(api_key, fail_write),
-        locks={},
+        state=BotState(tmp_path / "bot.sqlite3", options or Options(model="m"), admin_ids=config.admin_ids,
+                       allowed_ids=allowed),
+        make_client=lambda api_key, model: FakeModel(api_key, model, calls, fail_write),
+        slots=None,
     )
-    return SimpleNamespace(application=SimpleNamespace(bot_data={"services": services}), user_data={}), services
+    return s, calls
 
 
-def _update(user_id, *, query=None, message=None):
-    return SimpleNamespace(
-        effective_user=SimpleNamespace(id=user_id),
-        effective_message=message,
-        callback_query=query,
-    )
+class Harness:
+    def __init__(self, tmp_path, **kwargs):
+        self.services, self.calls = _setup(tmp_path, **kwargs)
+        self.application = FakeApplication(self.services)
+        self.bot = FakeBot()
+        self.user_data: dict[int, dict] = {}
+
+    def context(self, user_id):
+        return SimpleNamespace(application=self.application, bot=self.bot,
+                               user_data=self.user_data.setdefault(user_id, {}))
+
+    def update(self, user_id, *, message=None, query=None):
+        user = SimpleNamespace(id=user_id, username=f"user{user_id}", full_name=f"User {user_id}")
+        return SimpleNamespace(effective_user=user, effective_message=message, callback_query=query,
+                               effective_chat=SimpleNamespace(id=user_id))
+
+    def text(self, user_id, text):
+        message = FakeMessage(text=text)
+        self.run(on_text, user_id, message=message)
+        return message
+
+    def tap(self, user_id, data, handler):
+        query = FakeQuery(data, user_id)
+        self.run(handler, user_id, query=query)
+        return query
+
+    def run(self, handler, user_id, **kwargs):
+        asyncio.run(self._through_gate(handler, user_id, **kwargs))
+
+    async def _through_gate(self, handler, user_id, **kwargs):
+        update = self.update(user_id, **kwargs)
+        context = self.context(user_id)
+        try:
+            await gate(update, context)
+        except ApplicationHandlerStop:
+            return
+        await handler(update, context)
+        for task in self.application.tasks:
+            await task
+        self.application.tasks.clear()
 
 
-def test_block_toggle_is_saved_and_menu_redrawn(tmp_path):
-    context, services = _context(tmp_path)
-    query = FakeQuery("st:blk:examples", 1)
-    asyncio.run(on_settings_button(_update(1, query=query), context))
+def _labels(markup):
+    return [button.text for row in markup.inline_keyboard for button in row]
 
-    assert "examples" in services.store.get(1).blocks
-    text, markup = query.edited[-1]
-    assert "Блоки конспекта" in text
-    assert any("✅" in button.text and "Примеры" in button.text for row in markup.inline_keyboard for button in row)
+
+def _data(markup):
+    return [button.callback_data for row in markup.inline_keyboard for button in row]
+
+
+# --- settings ---------------------------------------------------------------------------
+
+
+def test_block_toggle_presets_and_reset(tmp_path):
+    h = Harness(tmp_path)
+    h.tap(1, "st:blk:examples", on_settings_button)
+    assert "examples" in h.services.store.get(1).blocks
+    h.tap(1, "st:preset:min", on_settings_button)
+    assert h.services.store.get(1).blocks == ("main_idea", "concepts", "takeaways")
+    h.tap(1, "st:tr", on_settings_button)
+    h.tap(1, "st:set:language:ru", on_settings_button)
+    settings = h.services.store.get(1)
+    assert settings.send_transcript and settings.language == "ru"
+    query = h.tap(1, "st:reset", on_settings_button)
+    assert h.services.store.get(1) == UserSettings()
+    assert "Настройки конспектов" in query.edited[-1][0]
 
 
 def test_custom_colour_flow_saves_hex_and_rejects_light_colours(tmp_path):
-    context, services = _context(tmp_path)
-    asyncio.run(on_settings_button(_update(1, query=FakeQuery("st:color", 1)), context))
-    assert context.user_data["awaiting"] == "color"
-
-    message = FakeMessage(text="#FFFF00")
-    asyncio.run(on_text(_update(1, message=message), context))
-    assert "awaiting" in context.user_data
-    assert "слишком светлый" in message.replies[-1]["text"]
-
-    message = FakeMessage(text="#0f766e")
-    asyncio.run(on_text(_update(1, message=message), context))
-    saved = services.store.get(1)
-    assert saved.theme == "custom"
-    assert saved.custom_color == "#0f766e"
-    assert "awaiting" not in context.user_data
+    h = Harness(tmp_path)
+    h.tap(1, "st:color", on_settings_button)
+    assert h.user_data[1]["awaiting"] == "color"
+    assert "слишком светлый" in h.text(1, "#FFFF00").replies[-1]["text"]
+    h.text(1, "#0f766e")
+    saved = h.services.store.get(1)
+    assert (saved.theme, saved.custom_color) == ("custom", "#0f766e")
+    assert "awaiting" not in h.user_data[1]
 
 
-def test_setkey_then_key_message_is_checked_and_saved(tmp_path):
-    context, services = _context(tmp_path)
-    asyncio.run(on_setkey(_update(4, message=FakeMessage(text="/setkey")), context))
-    assert context.user_data["awaiting"] == "key"
-
-    message = FakeMessage(text=SAVED_KEY)
-    asyncio.run(on_text(_update(4, message=message), context))
-
-    assert services.keys.load(4) == SAVED_KEY
-    assert "awaiting" not in context.user_data
-    assert message.replies[-1]["text"] == KEY_SAVED
+def test_reply_keyboard_button_opens_settings(tmp_path):
+    h = Harness(tmp_path)
+    message = h.text(1, "⚙ Настройки")
+    assert "Настройки конспектов" in message.replies[-1]["text"]
+    assert message.replies[-1]["parse_mode"] == "HTML"
 
 
-def test_key_pasted_without_the_command_is_detected(tmp_path):
-    context, services = _context(tmp_path)
-    asyncio.run(on_text(_update(4, message=FakeMessage(text=SAVED_KEY)), context))
-    assert services.keys.load(4) == SAVED_KEY
+def test_start_shows_the_main_keyboard_with_admin_button_only_for_admins(tmp_path):
+    h = Harness(tmp_path)
+    for user_id, expected in ((1, False), (ADMIN, True)):
+        message = FakeMessage(text="/start")
+        h.run(on_start, user_id, message=message)
+        keyboard = message.replies[-1]["reply_markup"]
+        labels = [button.text for row in keyboard.keyboard for button in row]
+        assert ("Админка" in labels) is expected
 
 
-def test_key_in_the_newer_format_is_detected_too(tmp_path):
-    context, services = _context(tmp_path)
-    key = "AQ.TestKeyValue1234567890abcdefghijklmnop"
-    asyncio.run(on_text(_update(4, message=FakeMessage(text=key)), context))
-    assert services.keys.load(4) == key
+# --- keys -------------------------------------------------------------------------------
 
 
-def test_rejected_key_is_not_saved_and_the_user_can_retry(tmp_path):
-    context, services = _context(tmp_path)
-    asyncio.run(on_setkey(_update(4, message=FakeMessage(text="/setkey")), context))
-
-    message = FakeMessage(text=REJECTED_KEY)
-    asyncio.run(on_text(_update(4, message=message), context))
-
-    assert services.keys.load(4) is None
-    assert "не принял ключ" in message.replies[-1]["text"]
-    assert context.user_data["awaiting"] == "key"
+def test_several_keys_in_one_message_are_checked_and_saved(tmp_path):
+    h = Harness(tmp_path)
+    message = h.text(4, f"{KEY}\n{KEY2}\n{BAD_KEY}")
+    assert h.services.keys.values(4) == [KEY, KEY2]
+    report = message.edits[-1]
+    assert report.count("добавлен") == 2 and "не принял ключ" in report
 
 
-def test_forgetkey_removes_the_saved_key(tmp_path):
-    context, services = _context(tmp_path)
-    services.keys.save(4, SAVED_KEY)
-    asyncio.run(on_forgetkey(_update(4, message=FakeMessage(text="/forgetkey")), context))
-    assert services.keys.load(4) is None
+def test_key_prompt_waits_for_a_key_and_explains_mistakes(tmp_path):
+    h = Harness(tmp_path)
+    h.tap(4, "ky:add", on_keys_button)
+    assert h.user_data[4]["awaiting"] == "key"
+    assert "Не нашёл ключа" in h.text(4, "привет").replies[-1]["text"]
+    h.text(4, KEY)
+    assert h.services.keys.values(4) == [KEY]
+    assert "awaiting" not in h.user_data[4]
+
+
+def test_keys_menu_deletes_one_and_clears_after_confirmation(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(4, KEY)
+    h.services.keys.add(4, KEY2)
+    first = h.services.keys.list(4)[0]
+    h.tap(4, f"ky:del:{first.id}", on_keys_button)
+    assert h.services.keys.values(4) == [KEY2]
+
+    query = h.tap(4, "ky:clear", on_keys_button)
+    assert "ky:clear:yes" in _data(query.edited[-1][1])
+    assert h.services.keys.values(4) == [KEY2]
+    h.tap(4, "ky:clear:yes", on_keys_button)
+    assert h.services.keys.values(4) == []
+
+
+def test_forgetkey_removes_all_keys(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(4, KEY)
+    h.run(on_forgetkey, 4, message=FakeMessage(text="/forgetkey"))
+    assert h.services.keys.values(4) == []
+
+
+# --- jobs -------------------------------------------------------------------------------
+
+
+def _document(body: bytes, name: str, mime: str):
+    async def download():
+        return bytearray(body)
+
+    async def get_file():
+        return SimpleNamespace(download_as_bytearray=download)
+
+    return SimpleNamespace(file_name=name, mime_type=mime, file_size=len(body), get_file=get_file)
 
 
 def test_transcript_without_a_key_asks_for_one(tmp_path):
-    context, _ = _context(tmp_path)
-    message = FakeMessage(text=LONG_TEXT)
-    asyncio.run(on_text(_update(2, message=message), context))
-    assert message.replies == [{"text": NO_KEY}]
+    h = Harness(tmp_path)
+    message = h.text(2, LONG_TEXT)
+    assert "нужен ключ Gemini" in message.replies[-1]["text"]
     assert not message.edits
 
 
-def test_text_document_becomes_pdf_with_the_users_key(tmp_path):
-    context, services = _context(tmp_path)
-    services.keys.save(5, SAVED_KEY)
-    body = LONG_TEXT.encode("utf-8")
-
-    async def get_file():
-        return SimpleNamespace(download_as_bytearray=_async(bytearray(body)))
-
-    document = SimpleNamespace(file_name="lecture.txt", file_size=len(body), get_file=get_file)
-    message = FakeMessage(document=document)
-    asyncio.run(on_media(_update(5, message=message), context))
-
-    assert any(reply.get("filename") == "Лекция.pdf" for reply in message.replies)
-    pdf = next(reply["document"] for reply in message.replies if "document" in reply)
-    assert pdf.startswith(b"%PDF")
-    assert message.edits[-1] == "✅ Конспект готов"
+def test_text_document_becomes_pdf(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    message = FakeMessage(document=_document(LONG_TEXT.encode(), "lecture.txt", "text/plain"))
+    h.run(on_media, 5, message=message)
+    pdf = next(reply for reply in message.replies if "document" in reply)
+    assert pdf["filename"] == "Лекция.pdf" and pdf["document"].startswith(b"%PDF")
+    assert "Конспект готов" in message.edits[-1]
+    assert h.services.state.stats().notes_total == 1
 
 
-def test_failures_are_reported_to_the_user(tmp_path):
-    context, services = _context(tmp_path, fail_write=GeminiError("Модель не вернула конспект. Попробуйте ещё раз."))
-    services.keys.save(2, SAVED_KEY)
-    message = FakeMessage(text=LONG_TEXT)
-    asyncio.run(on_text(_update(2, message=message), context))
-    assert message.edits[-1].startswith("😕 Модель не вернула конспект")
+def test_aac_document_with_a_wrong_name_is_sent_as_aac(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    h.services.store.save(5, UserSettings(output="tg", send_transcript=True))
+    body = b"\xff\xf1\x50\x80" + b"\x00" * 200
+    message = FakeMessage(document=_document(body, "recording", "application/octet-stream"))
+    h.run(on_media, 5, message=message)
+    assert ("transcribe", KEY, "audio.aac") in h.calls
+    transcript = next(reply for reply in message.replies if "document" in reply)
+    assert transcript["filename"].endswith("расшифровка.txt")
 
 
-def test_access_list_blocks_strangers(tmp_path):
-    context, _ = _context(tmp_path, allowed=frozenset({100}))
-    message = FakeMessage(text=LONG_TEXT)
-    asyncio.run(on_text(_update(999, message=message), context))
-    assert "Доступ закрыт" in message.replies[-1]["text"]
-    assert "999" in message.replies[-1]["text"]
-    assert not message.edits
+def test_second_key_takes_over_when_the_first_is_out_of_quota(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, QUOTA_KEY)
+    h.services.keys.add(5, KEY)
+    message = FakeMessage(voice=SimpleNamespace(mime_type="audio/ogg", file_size=10,
+                                                get_file=_document(b"OggS" + b"\x00" * 60, "v", "audio/ogg").get_file))
+    h.run(on_media, 5, message=message)
+    assert [call[1] for call in h.calls if call[0] == "transcribe"] == [QUOTA_KEY, KEY]
+    assert "Конспект готов" in message.edits[-1]
+    assert h.services.ring.resting(QUOTA_KEY) > 0
+
+
+def test_failures_are_reported_and_logged(tmp_path):
+    h = Harness(tmp_path, fail_write=GeminiError("Модель не вернула конспект. Попробуйте ещё раз."))
+    h.services.keys.add(2, KEY)
+    message = h.text(2, LONG_TEXT)
+    assert "Модель не вернула конспект" in message.edits[-1]
+    assert h.services.state.stats().failures_day == 1
 
 
 def test_telegram_messages_go_out_as_markdown_v2(tmp_path):
-    context, services = _context(tmp_path)
-    services.keys.save(3, SAVED_KEY)
-    services.store.save(3, UserSettings(output="tg"))
-    message = FakeMessage(text=LONG_TEXT)
-    asyncio.run(on_text(_update(3, message=message), context))
-    sent = [reply for reply in message.replies if "text" in reply and reply.get("parse_mode")]
-    assert sent, message.replies
-    assert all(reply["parse_mode"] == "MarkdownV2" for reply in sent)
-    assert Path(tmp_path / "s.sqlite3").exists()
+    h = Harness(tmp_path)
+    h.services.keys.add(3, KEY)
+    h.services.store.save(3, UserSettings(output="tg"))
+    message = h.text(3, LONG_TEXT)
+    sent = [reply for reply in message.replies if reply.get("parse_mode") == "MarkdownV2"]
+    assert sent and "tg://emoji" in sent[0]["text"]  # premium icons are on by default
+
+
+def test_shared_keys_serve_users_without_their_own_only_when_enabled(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(POOL, KEY2)
+    assert "нужен ключ Gemini" in h.text(6, LONG_TEXT).replies[-1]["text"]
+    h.services.state.set_option("shared_keys", True)
+    message = h.text(6, LONG_TEXT)
+    assert "на общем ключе" in message.edits[-1]
+    assert ("write", KEY2, "auto") in h.calls
+
+
+def test_daily_limit_stops_users_but_not_admins(tmp_path):
+    h = Harness(tmp_path)
+    h.services.state.set_option("daily_limit", 3)
+    for user_id in (7, ADMIN):
+        h.services.keys.add(user_id, KEY)
+        for _ in range(3):
+            h.services.state.log_job(user_id, "text", True, 1.0)
+    assert "Лимит" in h.text(7, LONG_TEXT).replies[-1]["text"]
+    assert "Конспект готов" in h.text(ADMIN, LONG_TEXT).edits[-1]
+
+
+# --- access -----------------------------------------------------------------------------
+
+
+def test_whitelist_blocks_strangers_and_shows_their_id(tmp_path):
+    h = Harness(tmp_path, allowed=frozenset({100}))
+    message = h.text(999, LONG_TEXT)
+    assert "Доступ закрыт" in message.replies[-1]["text"] and "999" in message.replies[-1]["text"]
+    assert h.services.state.user(999) is not None  # still recorded, so an admin can find them
+
+
+def test_banned_users_and_maintenance(tmp_path):
+    h = Harness(tmp_path)
+    h.services.state.set_banned(8, True)
+    assert "Доступ к боту закрыт" in h.text(8, "привет").replies[-1]["text"]
+    h.services.state.set_option("maintenance", True)
+    assert "обслуживании" in h.text(9, "привет").replies[-1]["text"]
+    assert "Настройки" in h.text(ADMIN, "Настройки").replies[-1]["text"]
+
+
+# --- admin ------------------------------------------------------------------------------
+
+
+def test_admin_panel_is_closed_to_others_and_explains_how_to_get_in(tmp_path):
+    h = Harness(tmp_path)
+    message = FakeMessage(text="/admin")
+    h.run(admin.on_admin, 1, message=message)
+    assert "только админам" in message.replies[-1]["text"]
+    query = h.tap(1, "ad:home", admin.on_admin_button)
+    assert query.answers == ["Только для админов"]
+
+    assert "ADMIN_IDS=1" in admin.not_admin_text(1, has_admins=False)
+
+
+def test_admin_home_stats_and_users(tmp_path):
+    h = Harness(tmp_path)
+    h.text(1, "привет")
+    message = FakeMessage(text="/admin")
+    h.run(admin.on_admin, ADMIN, message=message)
+    assert "Админ-панель" in message.replies[-1]["text"]
+    for data in ("ad:stats", "ad:users:0", "ad:user:1", "ad:access", "ad:model", "ad:pool:show", "ad:opt"):
+        query = h.tap(ADMIN, data, admin.on_admin_button)
+        text, markup = query.edited[-1]
+        assert text and markup is not None, data
+        assert all(len(item.encode()) <= 64 for item in _data(markup) if item), data
+
+
+def test_admin_bans_and_promotes_users_but_not_env_admins(tmp_path):
+    h = Harness(tmp_path)
+    h.tap(ADMIN, "ad:ban:5:1", admin.on_admin_button)
+    assert h.services.state.is_banned(5)
+    h.tap(ADMIN, "ad:adm:5:1", admin.on_admin_button)
+    assert h.services.state.is_admin(5)
+    query = h.tap(5, f"ad:ban:{ADMIN}:1", admin.on_admin_button)
+    assert not h.services.state.is_banned(ADMIN)
+    assert query.answers[-1] == "Этого пользователя так не изменить"
+
+
+def test_admin_switches_access_and_adds_ids(tmp_path):
+    h = Harness(tmp_path)
+    h.tap(ADMIN, "ad:access:whitelist", admin.on_admin_button)
+    assert h.services.options().access == "whitelist"
+    h.tap(ADMIN, "ad:wladd", admin.on_admin_button)
+    h.text(ADMIN, "11, 12")
+    assert h.services.state.whitelist() == [11, 12]
+    assert "Доступ закрыт" not in h.text(11, "Помощь").replies[-1]["text"]
+
+
+def test_admin_model_choice_is_checked_before_saving(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(ADMIN, KEY)
+    h.tap(ADMIN, "ad:model:set:1", admin.on_admin_button)
+    assert h.services.options().model == admin.MODEL_PRESETS[1]
+
+    h.tap(ADMIN, "ad:model:custom", admin.on_admin_button)
+    message = h.text(ADMIN, "broken-model")
+    assert "не ответила" in message.edits[-1]
+    assert h.services.options().model == admin.MODEL_PRESETS[1]
+    h.tap(ADMIN, "ad:model:custom", admin.on_admin_button)
+    h.text(ADMIN, "models/gemini-new")
+    assert h.services.options().model == "gemini-new"
+
+
+def test_admin_shared_keys_and_options(tmp_path):
+    h = Harness(tmp_path)
+    h.tap(ADMIN, "ad:pool:add", admin.on_admin_button)
+    h.text(ADMIN, f"{KEY} {KEY2}")
+    assert h.services.keys.values(POOL) == [KEY, KEY2]
+    h.tap(ADMIN, "ad:pool:toggle", admin.on_admin_button)
+    assert h.services.options().shared_keys
+
+    h.tap(ADMIN, "ad:opt:premium_emoji", admin.on_admin_button)
+    assert h.services.options().premium_emoji is False
+    query = h.tap(ADMIN, "ad:opt:daily_limit", admin.on_admin_button)
+    assert h.services.options().daily_limit == 3
+    assert "<tg-emoji" not in query.edited[-1][0]  # premium off means plain emoji
+
+
+def test_broadcast_copies_the_draft_to_everyone_not_banned(tmp_path):
+    h = Harness(tmp_path)
+    for user_id in (1, 2, 3):
+        h.text(user_id, "привет")
+    h.services.state.set_banned(3, True)
+    h.tap(ADMIN, "ad:bc", admin.on_admin_button)
+    draft = FakeMessage(text="Новости бота", message_id=42)
+    h.run(on_text, ADMIN, message=draft)
+    assert "уйдёт" in draft.replies[-1]["text"]
+    h.tap(ADMIN, "ad:bc:send", admin.on_admin_button)
+    assert sorted(h.bot.copied) == [1, 2, ADMIN]
+    assert "Доставлено: 3" in h.bot.sent[-1][1]
+
+
+@pytest.mark.parametrize("notify", [True, False])
+def test_admins_hear_about_new_users_when_asked(tmp_path, notify):
+    h = Harness(tmp_path)
+    h.services.state.set_option("notify_new_users", notify)
+    h.text(77, "привет")
+    h.text(77, "ещё раз")
+    assert len([chat for chat, _ in h.bot.sent if chat == ADMIN]) == (1 if notify else 0)

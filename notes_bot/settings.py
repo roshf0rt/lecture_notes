@@ -10,6 +10,7 @@ from .themes import CUSTOM, DEFAULT_THEME, THEMES, parse_hex
 
 OUTPUTS = ("pdf", "tg")
 DEFAULT_OUTPUT = "pdf"
+LANGUAGES = ("auto", "ru")
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,8 @@ class UserSettings:
     theme: str = DEFAULT_THEME
     custom_color: str | None = None
     blocks: tuple[str, ...] = DEFAULT_BLOCKS
+    language: str = "auto"
+    send_transcript: bool = False
 
     def toggle_block(self, block_id: str) -> UserSettings:
         enabled = set(self.blocks) ^ {block_id}
@@ -31,6 +34,8 @@ class UserSettings:
             "theme": self.theme,
             "custom_color": self.custom_color,
             "blocks": list(self.blocks),
+            "language": self.language,
+            "send_transcript": self.send_transcript,
         }
 
     @classmethod
@@ -50,12 +55,15 @@ class UserSettings:
         )
         output = raw.get("output")
         length = raw.get("length")
+        language = raw.get("language")
         return cls(
             output=output if output in OUTPUTS else DEFAULT_OUTPUT,
             length=length if length in LENGTH_BY_ID else DEFAULT_LENGTH,
             theme=theme,
             custom_color=custom_color,
             blocks=blocks,
+            language=language if language in LANGUAGES else "auto",
+            send_transcript=raw.get("send_transcript") is True,
         )
 
 

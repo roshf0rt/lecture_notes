@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from .blocks import BLOCKS, BY_ID
 from .notes import NoteDocument
+from .ui import markdown_block_icon
 
 TG_LIMIT = 4096
 _PART_RESERVE = 16
@@ -55,9 +56,9 @@ def _quote(lines: list[str]) -> str:
     return "\n".join(f">{line}" for line in lines)
 
 
-def _heading(block_id: str) -> str:
+def _heading(block_id: str, premium: bool = False) -> str:
     block = BY_ID[block_id]
-    return f"*{escape(block.icon)} {escape(block.title)}*"
+    return f"*{markdown_block_icon(block_id, premium, escape(block.icon))} {escape(block.title)}*"
 
 
 def _bullets(items: list[str], marker: str) -> list[str]:
@@ -73,7 +74,7 @@ def _numbered(items: list[str]) -> list[str]:
 
 
 def _main_idea(doc: NoteDocument) -> list[str]:
-    return [_quote([_heading("main_idea"), inline(piece)]) for piece in _pieces(doc.main_idea)]
+    return [_quote([inline(piece)]) for piece in _pieces(doc.main_idea)]
 
 
 def _context(doc: NoteDocument) -> list[str]:
@@ -158,8 +159,11 @@ def _pack(units: list[tuple[str, str]], limit: int) -> list[str]:
     return messages
 
 
-def render_messages(doc: NoteDocument, limit: int = TG_LIMIT) -> list[str]:
-    """Render the note as MarkdownV2 messages, each within Telegram's length limit."""
+def render_messages(doc: NoteDocument, limit: int = TG_LIMIT, premium: bool = False) -> list[str]:
+    """Render the note as MarkdownV2 messages, each within Telegram's length limit.
+
+    With premium on, block headings use custom emoji (the bot owner needs Telegram Premium).
+    """
     units: list[tuple[str, str]] = [("", f"{escape(doc.icon)} *{escape(doc.title)}*")]
     for block in BLOCKS:
         if not doc.has_block(block.id):
@@ -167,8 +171,8 @@ def render_messages(doc: NoteDocument, limit: int = TG_LIMIT) -> list[str]:
         items = _RENDERERS[block.id](doc)
         if not items:
             continue
-        if block.id != "main_idea":
-            items[0] = f"{_heading(block.id)}\n{items[0]}"
+        heading = _heading(block.id, premium)
+        items[0] = f"{_quote([heading]) if block.id == 'main_idea' else heading}\n{items[0]}"
         for index, item in enumerate(items):
             compact = block.id in _COMPACT and index > 0
             units.append(("\n" if compact else "\n\n", item))
@@ -181,6 +185,7 @@ def render_messages(doc: NoteDocument, limit: int = TG_LIMIT) -> list[str]:
 
 def plain_text(markdown: str) -> str:
     """Fallback for a message Telegram refused: drop the markup and keep the words."""
-    text = re.sub(r"(?m)^>", "", markdown)
+    text = re.sub(r"!\[([^\]]*)\]\(tg://emoji\?id=\d+\)", r"\1", markdown)
+    text = re.sub(r"(?m)^>", "", text)
     text = re.sub(r"(?<!\\)[*_`]", "", text)
     return re.sub(r"\\(.)", r"\1", text)
