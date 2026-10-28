@@ -4,8 +4,17 @@ from types import SimpleNamespace
 import pytest
 from telegram.ext import ApplicationHandlerStop
 
-from notes_bot import admin
-from notes_bot.bot import gate, on_forgetkey, on_keys_button, on_media, on_settings_button, on_start, on_text
+from notes_bot import admin, bot
+from notes_bot.bot import (
+    gate,
+    on_batch_button,
+    on_forgetkey,
+    on_keys_button,
+    on_media,
+    on_settings_button,
+    on_start,
+    on_text,
+)
 from notes_bot.config import Config
 from notes_bot.gemini import QUOTA, GeminiError
 from notes_bot.keys import POOL, KeyVault
@@ -20,6 +29,11 @@ BAD_KEY = "AIzaSyTestKeyValue1234567890abcdefBAD"
 QUOTA_KEY = "AIzaSyTestKeyValue1234567890abcdeQUOTA"
 LONG_TEXT = "Лекция о рекламе и её признаках. " * 10
 ADMIN = 900
+
+
+@pytest.fixture(autouse=True)
+def no_batch_wait(monkeypatch):
+    monkeypatch.setattr(bot, "BATCH_WINDOW", 0)
 
 
 class FakeModel:
@@ -164,6 +178,13 @@ class Harness:
     def run(self, handler, user_id, **kwargs):
         asyncio.run(self._through_gate(handler, user_id, **kwargs))
 
+    def send_together(self, user_id, messages):
+        """Several files arriving at once, like an album: their handlers overlap."""
+        async def all_of_them():
+            await asyncio.gather(*(self._through_gate(on_media, user_id, message=message) for message in messages))
+
+        asyncio.run(all_of_them())
+
     async def _through_gate(self, handler, user_id, **kwargs):
         update = self.update(user_id, **kwargs)
         context = self.context(user_id)
@@ -287,6 +308,87 @@ def _document(body: bytes, name: str, mime: str):
     return SimpleNamespace(file_name=name, mime_type=mime, file_size=len(body), get_file=get_file)
 
 
+def _voice(duration=75):
+    return SimpleNamespace(mime_type="audio/ogg", file_size=64, duration=duration,
+                           get_file=_document(b"OggS" + b"\x00" * 60, "v", "audio/ogg").get_file)
+
+
+def _two_recordings():
+    aac = _document(b"\xff\xf1\x50\x80" + b"\x00" * 200, "part2.aac", "audio/aac")
+    return [FakeMessage(voice=_voice(), message_id=10), FakeMessage(document=aac, message_id=11)]
+
+
+def _question(h, user_id, messages):
+    h.send_together(user_id, messages)
+    asked = [reply for message in messages for reply in message.replies if "Пришло файлов" in reply.get("text", "")]
+    assert len(asked) == 1, [m.replies for m in messages]
+    return asked[0]
+
+
+def test_files_sent_together_bring_one_question(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    question = _question(h, 5, _two_recordings())
+    assert "1. Голосовое, 1:15" in question["text"] and "2. part2.aac" in question["text"]
+    assert not h.calls  # nothing is transcribed before the answer
+    data = [button.callback_data for row in question["reply_markup"].inline_keyboard for button in row]
+    assert [item.split(":")[1] for item in data] == ["merge", "split", "cancel"]
+
+
+def _answer(h, user_id, question, action):
+    data = next(button.callback_data for row in question["reply_markup"].inline_keyboard for button in row
+                if button.callback_data.startswith(f"bt:{action}:"))
+    query = FakeQuery(data, user_id)
+    message = FakeMessage(message_id=99)
+    query.message = message
+    asyncio.run(h._through_gate(on_batch_button, user_id, query=query, message=message))
+    return query, message
+
+
+def test_merge_makes_one_note_from_all_parts_in_order(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    h.services.store.save(5, UserSettings(send_transcript=True))
+    question = _question(h, 5, _two_recordings())
+    _, message = _answer(h, 5, question, "merge")
+    assert [call[2] for call in h.calls if call[0] == "transcribe"] == ["audio.ogg", "audio.aac"]
+    assert len([call for call in h.calls if call[0] == "write"]) == 1
+    files = [reply["filename"] for reply in message.replies if "document" in reply]
+    assert files == ["Лекция.pdf", "Лекция — расшифровка.txt"]
+    transcript = next(reply["document"] for reply in message.replies if "document" in reply and "расшифровка" in reply["filename"])
+    assert transcript.decode().startswith("[Часть 1 из 2]")
+    assert any("1 из 2" in text for text in message.edits)
+
+
+def test_split_makes_a_note_per_file(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    question = _question(h, 5, _two_recordings())
+    _, message = _answer(h, 5, question, "split")
+    assert len([call for call in h.calls if call[0] == "write"]) == 2
+    assert len([reply for reply in message.replies if "document" in reply]) == 2
+
+
+def test_cancel_and_stale_buttons(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    question = _question(h, 5, _two_recordings())
+    query, _ = _answer(h, 5, question, "cancel")
+    assert "Отменено" in query.edited[-1][0]
+    query, _ = _answer(h, 5, question, "merge")
+    assert query.answers == ["Эти файлы уже не ждут ответа"]
+    assert not h.calls
+
+
+def test_files_sent_while_the_question_is_open_join_it(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    _question(h, 5, _two_recordings())
+    late = FakeMessage(document=_document(LONG_TEXT.encode(), "notes.txt", "text/plain"), message_id=12)
+    h.run(on_media, 5, message=late)
+    assert "Пришло файлов: 3" in late.replies[-1]["text"] and "3. notes.txt" in late.replies[-1]["text"]
+
+
 def test_transcript_without_a_key_asks_for_one(tmp_path):
     h = Harness(tmp_path)
     message = h.text(2, LONG_TEXT)
@@ -321,8 +423,7 @@ def test_second_key_takes_over_when_the_first_is_out_of_quota(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, QUOTA_KEY)
     h.services.keys.add(5, KEY)
-    message = FakeMessage(voice=SimpleNamespace(mime_type="audio/ogg", file_size=10,
-                                                get_file=_document(b"OggS" + b"\x00" * 60, "v", "audio/ogg").get_file))
+    message = FakeMessage(voice=_voice())
     h.run(on_media, 5, message=message)
     assert [call[1] for call in h.calls if call[0] == "transcribe"] == [QUOTA_KEY, KEY]
     assert "Конспект готов" in message.edits[-1]

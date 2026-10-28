@@ -4,11 +4,12 @@ import asyncio
 import io
 import logging
 import re
+import secrets
 import time
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
-from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, Message, Update
+from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
@@ -45,7 +46,7 @@ from .menus import (
     settings_view,
     welcome,
 )
-from .pipeline import NotesPipeline, Result
+from .pipeline import NotesPipeline, Result, Source
 from .render_tg import plain_text
 from .services import ADDED, SHARED, Services, add_keys, check_keys, edit, key_report, reply, services
 from .settings import SettingsStore, UserSettings
@@ -64,6 +65,10 @@ STAGES = {
     "rendering": ("rendering", "Оформляю…"),
 }
 AWAIT_KEY, AWAIT_COLOR = "key", "color"
+# Files sent together (an album, or several in a row) are collected for this long before the bot asks what to do.
+BATCH_WINDOW = 2.5
+MAX_BATCH = 10
+PENDING_TTL = 3600
 USER_COMMANDS = [
     BotCommand("start", "Главное меню"),
     BotCommand("settings", "Настройки конспектов"),
@@ -303,7 +308,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if found and not KEY_PATTERN.sub("", text).strip():
         await _save_keys(update, context, found)
         return
-    await _run_job(update, context, text=text)
+    await _run_job(update, context, [Source(text=text)])
 
 
 def _attachment(message: Message) -> tuple[object, str | None, str | None] | None:
@@ -330,6 +335,36 @@ def _decode(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _describe(message: Message, name: str | None) -> str:
+    """A short label for the file list in the question."""
+    def minutes(seconds: int | None) -> str:
+        return f", {seconds // 60}:{seconds % 60:02d}" if seconds else ""
+
+    if message.voice:
+        return "Голосовое" + minutes(message.voice.duration)
+    if message.video_note:
+        return "Кружок" + minutes(message.video_note.duration)
+    if message.audio:
+        return (name or message.audio.title or "Аудио") + minutes(message.audio.duration)
+    if message.video:
+        return (name or "Видео") + minutes(message.video.duration)
+    return name or "Файл"
+
+
+@dataclass(frozen=True)
+class Incoming:
+    message_id: int
+    source: Source
+    label: str
+
+
+@dataclass(frozen=True)
+class Pending:
+    token: str
+    items: list[Incoming]
+    created: float
+
+
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     s = services(context)
     ui = s.ui()
@@ -347,15 +382,88 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                              "Сожмите запись или разбейте её на части.")
         return
 
-    file = await attachment.get_file()
-    data = bytes(await file.download_as_bytearray())
-    if (name or "").lower().endswith(TEXT_EXTENSIONS) or (mime or "").startswith("text/plain"):
-        await _run_job(update, context, text=_decode(data))
-    elif not message.document or is_media(name, mime) or sniff(data):
+    # While a download runs, nobody flushes the batch: the file may belong to it.
+    data = context.user_data
+    data["receiving"] = data.get("receiving", 0) + 1
+    try:
+        file = await attachment.get_file()
+        body = bytes(await file.download_as_bytearray())
+    except TelegramError:
+        log.exception("Could not download a file")
+        body = None
+    finally:
+        data["receiving"] -= 1
+
+    if body is None:
+        await reply(message, f"{ui.e('warning')} Не получилось скачать файл. Пришлите его ещё раз.")
+    elif (name or "").lower().endswith(TEXT_EXTENSIONS) or (mime or "").startswith("text/plain"):
+        data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=_decode(body)), name or "Текст"))
+    elif not message.document or is_media(name, mime) or sniff(body):
         # A document without a telling name or type may still be a recording: the header decides.
-        await _run_job(update, context, audio=data, audio_name=name, audio_mime=mime)
+        source = Source(audio=body, name=name, mime=mime)
+        data.setdefault("batch", []).append(Incoming(message.message_id, source, _describe(message, name)))
     else:
         await reply(message, f"{ui.e('warning')} Не понимаю этот файл. Пришлите аудио, видео или текст в формате .txt.")
+    await _flush_later(update, context)
+
+
+async def _flush_later(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Wait a moment for more files. The handler of the last file decides: one file runs at once, several get a question."""
+    data = context.user_data
+    seq = data["batch_seq"] = data.get("batch_seq", 0) + 1
+    await asyncio.sleep(BATCH_WINDOW)
+    if data.get("batch_seq") != seq or data.get("receiving", 0) > 0 or not data.get("batch"):
+        return
+    items = sorted(data.pop("batch"), key=lambda item: item.message_id)
+    pending: Pending | None = data.pop("pending", None)
+    if pending is not None and time.time() - pending.created < PENDING_TTL:
+        items = pending.items + items  # files sent while the question was open join it
+    if len(items) == 1:
+        await _run_job(update, context, [items[0].source])
+        return
+    await _ask_about_batch(update.effective_message, context, items)
+
+
+async def _ask_about_batch(message: Message, context: ContextTypes.DEFAULT_TYPE, items: list[Incoming]) -> None:
+    ui = services(context).ui()
+    dropped = len(items) - MAX_BATCH
+    items = items[:MAX_BATCH]
+    token = secrets.token_hex(4)
+    context.user_data["pending"] = Pending(token, items, time.time())
+    lines = [f"{ui.e('clip')} <b>Пришло файлов: {len(items)}</b>", ""]
+    lines += [f"{number}. {html(item.label)}" for number, item in enumerate(items, start=1)]
+    if dropped > 0:
+        lines += ["", f"Беру первые {MAX_BATCH}, остальные {dropped} пришлите отдельно."]
+    lines += ["", "Это одна лекция по частям или разные? Части склеиваются в порядке отправки."]
+    keyboard = InlineKeyboardMarkup([
+        [ui.button("stack", "Одна лекция", f"bt:merge:{token}", style="success"),
+         ui.button("list", "Отдельные конспекты", f"bt:split:{token}", style="primary")],
+        [ui.button("no", "Отмена", f"bt:cancel:{token}")],
+    ])
+    await reply(message, "\n".join(lines), keyboard)
+
+
+async def on_batch_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    ui = services(context).ui()
+    _, action, token = query.data.split(":")
+    pending: Pending | None = context.user_data.get("pending")
+    if pending is None or pending.token != token:
+        await query.answer("Эти файлы уже не ждут ответа", show_alert=True)
+        await edit(query, f"{ui.e('info')} Этот вопрос устарел. Пришлите файлы ещё раз.")
+        return
+    context.user_data.pop("pending")
+    await query.answer()
+    count = len(pending.items)
+    if action == "merge":
+        await edit(query, f"{ui.e('stack')} Делаю один конспект из {count} частей.")
+        await _run_job(update, context, [item.source for item in pending.items])
+    elif action == "split":
+        await edit(query, f"{ui.e('list')} Делаю {count} отдельных конспектов, по очереди.")
+        for item in pending.items:
+            await _run_job(update, context, [item.source], wait=True)
+    else:
+        await edit(query, f"{ui.e('no')} Отменено, файлы забыты.")
 
 
 # --- jobs -------------------------------------------------------------------------------
@@ -366,20 +474,21 @@ def no_key_text(ui: Ui) -> str:
             f'<a href="{AI_STUDIO}">Google AI Studio</a> и пришлите сюда одним сообщением.')
 
 
-def _stage(ui: Ui, stage: str) -> str:
+def _stage(ui: Ui, stage: str, detail: str = "") -> str:
     icon, text = STAGES[stage]
+    if detail:
+        text = f"{text.removesuffix('…')} {detail}…"
     return f"{ui.e(icon)} {text}"
 
 
 async def _run_job(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
+    sources: list[Source],
     *,
-    text: str | None = None,
-    audio: bytes | None = None,
-    audio_name: str | None = None,
-    audio_mime: str | None = None,
+    wait: bool = False,
 ) -> None:
+    """Make one note from the sources. With wait, queue behind the user's running note instead of refusing."""
     message = update.effective_message
     user_id = update.effective_user.id
     s = services(context)
@@ -395,25 +504,25 @@ async def _run_job(
         return
 
     lock = s.locks.setdefault(user_id, asyncio.Lock())
-    if lock.locked():
+    if lock.locked() and not wait:
         await reply(message, f"{ui.e('clock')} Предыдущий конспект ещё готовится. Дождитесь, пожалуйста, его.")
         return
 
+    from_audio = any(source.is_audio for source in sources)
     async with lock:
         settings = s.store.get(user_id)
-        start_stage = "transcribing" if audio is not None else "writing"
+        start_stage = "transcribing" if from_audio else "writing"
         status = await reply(message, _stage(ui, "queued" if s.slots.locked() else start_stage))
 
-        async def progress(stage: str) -> None:
-            await _status(status, _stage(ui, stage))
+        async def progress(stage: str, detail: str = "") -> None:
+            await _status(status, _stage(ui, stage, detail))
 
-        kind = "audio" if audio is not None else "text"
+        kind = "audio" if from_audio else "text"
         started = time.monotonic()
         async with s.slots:
             try:
                 result = await NotesPipeline(model).run(
-                    settings, progress=progress, text=text, audio=audio, audio_name=audio_name,
-                    audio_mime=audio_mime, premium=options.premium_emoji,
+                    settings, progress=progress, sources=sources, premium=options.premium_emoji,
                 )
             except GeminiError as error:
                 s.state.log_job(user_id, kind, False, time.monotonic() - started, str(error))
@@ -427,7 +536,7 @@ async def _run_job(
 
         s.state.log_job(user_id, kind, True, time.monotonic() - started)
         await _status(status, f"{ui.e('done')} Конспект готов" + (" (на общем ключе)" if source == SHARED else ""))
-        await _send(message, result, settings, audio is not None)
+        await _send(message, result, settings, from_audio)
 
 
 async def _status(status: Message, text: str) -> None:
@@ -502,6 +611,7 @@ def build_application(config: Config) -> Application:
     application.add_handler(CommandHandler("admin", admin.on_admin))
     application.add_handler(CallbackQueryHandler(on_settings_button, pattern=r"^st:"))
     application.add_handler(CallbackQueryHandler(on_keys_button, pattern=r"^ky:"))
+    application.add_handler(CallbackQueryHandler(on_batch_button, pattern=r"^bt:"))
     application.add_handler(CallbackQueryHandler(admin.on_admin_button, pattern=r"^ad:"))
     application.add_handler(
         MessageHandler(

@@ -63,6 +63,8 @@ def _classify(error: errors.APIError) -> GeminiError:
         return GeminiError("Gemini не принял ключ или у него нет доступа к модели. Проверьте ключ в Google AI Studio.", AUTH)
     if error.code == 404:
         return GeminiError("Выбранная модель Gemini сейчас недоступна. Попробуйте позже или сообщите администратору бота.", MODEL)
+    if error.code == 400 and "INVALID_ARGUMENT" in f"{error.status} {error.details}":
+        return GeminiError("Gemini не смог прочитать материал: похоже, запись повреждена или пустая.")
     if error.code in (500, 503, 504):
         return GeminiError("Gemini сейчас перегружен. Попробуйте через минуту.", OVERLOADED)
     return GeminiError(f"Gemini вернул ошибку {error.code}. Попробуйте ещё раз.")

@@ -221,3 +221,9 @@ def test_check_key_reports_a_rejected_key(make_server):
     with pytest.raises(GeminiError, match="не принял ключ") as caught:
         asyncio.run(_client(server).check_key())
     assert caught.value.kind == AUTH
+
+
+def test_unreadable_recording_gets_a_clear_message(make_server):
+    server = make_server(400, {"error": {"code": 400, "message": "Request contains an invalid argument.", "status": "INVALID_ARGUMENT"}})
+    with pytest.raises(GeminiError, match="повреждена или пустая"):
+        asyncio.run(_client(server).transcribe(b"OggS", "voice.ogg"))

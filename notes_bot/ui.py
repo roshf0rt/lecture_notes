@@ -67,6 +67,9 @@ ICONS: dict[str, tuple[str, str]] = {
     "star": ("⭐️", "6034923938486684992"),
     "chart": ("📈", "5938539885907415367"),
     "calendar": ("📅", "5890937706803894250"),
+    "clip": ("📎", "6039451237743595514"),
+    "stack": ("📦", "5778672437122045013"),
+    "list": ("🗂", "5766994197705921104"),
 }
 
 # Note blocks in Telegram messages, keyed by block id.

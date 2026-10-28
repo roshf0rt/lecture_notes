@@ -31,7 +31,7 @@ class FakeModel:
 def _run(pipeline, settings, **kwargs):
     stages = []
 
-    async def progress(stage):
+    async def progress(stage, detail=""):
         stages.append(stage)
 
     result = asyncio.run(pipeline.run(settings, progress=progress, **kwargs))
@@ -146,3 +146,17 @@ def test_premium_can_be_stripped_from_a_message_and_keyboard():
 
     _, reply_markup = without_premium("", main_keyboard(PREMIUM, True))
     assert reply_markup.keyboard[0][0].text == "⚙ Настройки"
+
+
+def test_a_failing_part_is_named_in_the_error():
+    class BrokenSecond(FakeModel):
+        async def transcribe(self, audio, filename):
+            if audio == b"bad":
+                raise GeminiError("запись повреждена")
+            return LONG_TRANSCRIPT
+
+    from notes_bot.pipeline import Source
+
+    sources = [Source(audio=b"ogg", name="a.ogg"), Source(audio=b"bad", name="b.ogg")]
+    with pytest.raises(GeminiError, match=r"Файл 2 \(b\.ogg\): запись повреждена"):
+        _run(NotesPipeline(BrokenSecond()), UserSettings(), sources=sources)
