@@ -20,19 +20,17 @@ from telegram.ext import (
 )
 
 from .config import Config
-from .llm import NotesError, NotesWriter
+from .gemini import GeminiClient, GeminiError, is_media_name
 from .menus import apply_choice, build_view, color_prompt
 from .pipeline import NotesPipeline, Result
 from .render_tg import plain_text
 from .settings import SettingsStore
 from .themes import CUSTOM, parse_hex
-from .transcribe import Transcriber, TranscriptionError
 
 log = logging.getLogger(__name__)
 
 MAX_FILE_BYTES = 20 * 1024 * 1024  # Bot API refuses to download bigger files
 TEXT_EXTENSIONS = (".txt", ".md")
-AUDIO_EXTENSIONS = (".mp3", ".m4a", ".ogg", ".oga", ".opus", ".wav", ".flac", ".aac", ".webm", ".mp4", ".mpeg", ".mpga")
 STAGES = {
     "transcribing": "🎙 Расшифровываю запись…",
     "writing": "✍️ Пишу конспект…",
@@ -178,7 +176,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     attachment, name = found
     lowered = name.lower()
-    if not (lowered.endswith(TEXT_EXTENSIONS) or lowered.endswith(AUDIO_EXTENSIONS) or not message.document):
+    if not (lowered.endswith(TEXT_EXTENSIONS) or is_media_name(name) or not message.document):
         await message.reply_text("Не понимаю этот файл. Пришлите аудио, видео или текст в формате .txt.")
         return
     if (attachment.file_size or 0) > MAX_FILE_BYTES:
@@ -221,7 +219,7 @@ async def _run_job(
             result = await services.pipeline.run(
                 settings, progress=progress, text=text, audio=audio, audio_name=audio_name
             )
-        except (TranscriptionError, NotesError) as error:
+        except GeminiError as error:
             with suppress(TelegramError):
                 await status.edit_text(f"😕 {error}")
             return
@@ -258,8 +256,7 @@ async def _send(message: Message, result: Result) -> None:
 
 def build_application(config: Config) -> Application:
     application = Application.builder().token(config.telegram_token).concurrent_updates(True).build()
-    transcriber = Transcriber(config.openai_api_key, config.transcribe_model) if config.openai_api_key else None
-    pipeline = NotesPipeline(transcriber, NotesWriter(config.anthropic_api_key, config.notes_model))
+    pipeline = NotesPipeline(GeminiClient(config.gemini_api_key, config.gemini_model))
     application.bot_data["services"] = Services(
         config=config,
         store=SettingsStore(config.data_dir / "settings.sqlite3"),

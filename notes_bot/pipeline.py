@@ -3,18 +3,24 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Protocol
 
-from .llm import NotesError, NotesWriter
+from .gemini import GeminiError
 from .notes import NoteDocument
 from .render_pdf import render_pdf
 from .render_tg import render_messages
 from .settings import UserSettings
 from .themes import get_theme
-from .transcribe import Transcriber, TranscriptionError
 
 MIN_TEXT_CHARS = 100
 MAX_TEXT_CHARS = 400_000
 Progress = Callable[[str], Awaitable[None]]
+
+
+class Model(Protocol):
+    async def transcribe(self, audio: bytes, filename: str) -> str: ...
+
+    async def write(self, transcript: str, enabled: tuple[str, ...], length_id: str) -> NoteDocument: ...
 
 
 @dataclass(frozen=True)
@@ -25,9 +31,8 @@ class Result:
 
 
 class NotesPipeline:
-    def __init__(self, transcriber: Transcriber | None, writer: NotesWriter) -> None:
-        self._transcriber = transcriber
-        self._writer = writer
+    def __init__(self, model: Model) -> None:
+        self._model = model
 
     async def run(
         self,
@@ -39,18 +44,16 @@ class NotesPipeline:
         audio_name: str | None = None,
     ) -> Result:
         if audio is not None:
-            if self._transcriber is None:
-                raise TranscriptionError("Распознавание речи не настроено: нужен OPENAI_API_KEY.")
             await progress("transcribing")
-            text = await self._transcriber.transcribe(audio, audio_name or "audio.ogg")
+            text = await self._model.transcribe(audio, audio_name or "audio.ogg")
 
         if text is None or len(text.strip()) < MIN_TEXT_CHARS:
-            raise NotesError("В материале слишком мало текста для конспекта.")
+            raise GeminiError("В материале слишком мало текста для конспекта.")
         if len(text) > MAX_TEXT_CHARS:
-            raise NotesError("Материал слишком длинный. Разбейте его на несколько частей.")
+            raise GeminiError("Материал слишком длинный. Разбейте его на несколько частей.")
 
         await progress("writing")
-        document = (await self._writer.write(text, settings.blocks, settings.length)).only(settings.blocks)
+        document = (await self._model.write(text, settings.blocks, settings.length)).only(settings.blocks)
 
         await progress("rendering")
         if settings.output == "pdf":

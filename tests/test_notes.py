@@ -1,17 +1,15 @@
 from notes_bot.blocks import BLOCKS
-from notes_bot.notes import NoteDocument, Table, build_user_message, notes_tool
+from notes_bot.notes import NoteDocument, Table, build_user_message, note_schema
 
 
-def test_tool_schema_includes_only_enabled_blocks():
-    tool = notes_tool(["concepts", "takeaways"])
-    properties = tool["input_schema"]["properties"]
-    assert set(properties) == {"title", "icon", "concepts", "takeaways"}
-    assert set(tool["input_schema"]["required"]) == {"title", "concepts", "takeaways"}
+def test_schema_includes_only_enabled_blocks():
+    schema = note_schema(["concepts", "takeaways"])
+    assert set(schema["properties"]) == {"title", "icon", "concepts", "takeaways"}
+    assert set(schema["required"]) == {"title", "concepts", "takeaways"}
 
 
-def test_tool_schema_keeps_note_order_regardless_of_input_order():
-    tool = notes_tool(["takeaways", "main_idea"])
-    assert tool["input_schema"]["required"] == ["title", "main_idea", "takeaways"]
+def test_schema_keeps_note_order_regardless_of_input_order():
+    assert note_schema(["takeaways", "main_idea"])["required"] == ["title", "main_idea", "takeaways"]
 
 
 def test_only_empties_disabled_blocks(sample_doc):

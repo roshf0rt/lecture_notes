@@ -22,10 +22,8 @@ def _user_ids(raw: str) -> frozenset[int]:
 @dataclass(frozen=True)
 class Config:
     telegram_token: str
-    anthropic_api_key: str
-    openai_api_key: str | None
-    notes_model: str
-    transcribe_model: str
+    gemini_api_key: str
+    gemini_model: str
     data_dir: Path
     allowed_user_ids: frozenset[int]
 
@@ -34,10 +32,8 @@ class Config:
         env = os.environ
         return cls(
             telegram_token=_required("TELEGRAM_BOT_TOKEN"),
-            anthropic_api_key=_required("ANTHROPIC_API_KEY"),
-            openai_api_key=env.get("OPENAI_API_KEY", "").strip() or None,
-            notes_model=env.get("NOTES_MODEL", "claude-sonnet-5-5"),
-            transcribe_model=env.get("TRANSCRIBE_MODEL", "whisper-1"),
+            gemini_api_key=_required("GEMINI_API_KEY"),
+            gemini_model=env.get("GEMINI_MODEL", "gemini-2.5-flash").strip(),
             data_dir=Path(env.get("DATA_DIR", "data")),
             allowed_user_ids=_user_ids(env.get("ALLOWED_USER_IDS", "")),
         )

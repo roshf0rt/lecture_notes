@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from notes_bot.bot import Services, on_media, on_settings_button, on_text
 from notes_bot.config import Config
-from notes_bot.llm import NotesError
+from notes_bot.gemini import GeminiError
 from notes_bot.notes import NoteDocument
 from notes_bot.pipeline import NotesPipeline
 from notes_bot.settings import SettingsStore, UserSettings
@@ -58,17 +58,15 @@ class FakeWriter:
 def _context(tmp_path, *, writer=None, allowed=frozenset()):
     config = Config(
         telegram_token="t",
-        anthropic_api_key="a",
-        openai_api_key=None,
-        notes_model="m",
-        transcribe_model="w",
+        gemini_api_key="g",
+        gemini_model="m",
         data_dir=tmp_path,
         allowed_user_ids=allowed,
     )
     services = Services(
         config=config,
         store=SettingsStore(tmp_path / "s.sqlite3"),
-        pipeline=NotesPipeline(None, writer or FakeWriter()),
+        pipeline=NotesPipeline(writer or FakeWriter()),
         locks={},
     )
     return SimpleNamespace(
@@ -141,7 +139,7 @@ def test_text_document_becomes_pdf_with_default_settings(tmp_path):
 def test_failures_are_reported_to_the_user(tmp_path):
     class BrokenWriter:
         async def write(self, transcript, enabled, length):
-            raise NotesError("Модель не вернула конспект. Попробуйте ещё раз.")
+            raise GeminiError("Модель не вернула конспект. Попробуйте ещё раз.")
 
     context, _ = _context(tmp_path, writer=BrokenWriter())
     message = FakeMessage(text="Достаточно длинный текст лекции, чтобы пройти проверку. " * 3)
