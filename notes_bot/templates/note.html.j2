@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>{{ title }}</title>
+  <style>
+{{ base_css|safe }}
+{{ theme_css|safe }}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="cover-icon">{{ icon }}</div>
+    <h1 class="title">{{ title }}</h1>
+    {% if main_idea %}
+    <div class="callout tone-blue">
+      <p class="callout-label"><span class="callout-icon">{{ main_icon }}</span>{{ main_title }}</p>
+      <p>{{ main_idea|safe }}</p>
+    </div>
+    {% endif %}
+  </header>
+
+  {% if show_toc %}
+  <nav class="toc">
+    <p class="toc-title">Содержание</p>
+    <ol class="toc-list">
+      {% for s in sections %}<li><a href="#{{ s.id }}">{{ s.icon }} {{ s.title }}</a></li>{% endfor %}
+    </ol>
+  </nav>
+  {% endif %}
+
+  {% for s in sections %}
+  <section class="block tone-{{ s.tone }}" id="{{ s.id }}">
+    <h2>{{ s.icon }} {{ s.title }}</h2>
+    {% if s.kind == "paragraphs" %}
+      {% for item in s.items %}<p>{{ item|safe }}</p>{% endfor %}
+    {% elif s.kind == "table" %}
+      <table>
+        <thead><tr>{% for h in s.headers %}<th>{{ h|safe }}</th>{% endfor %}</tr></thead>
+        <tbody>
+          {% for row in s.rows %}<tr>{% for cell in row %}<td>{{ cell|safe }}</td>{% endfor %}</tr>{% endfor %}
+        </tbody>
+      </table>
+    {% elif s.kind == "steps" %}
+      {% if s.intro %}<p>{{ s.intro|safe }}</p>{% endif %}
+      <ol class="steps">{% for item in s.items %}<li>{{ item|safe }}</li>{% endfor %}</ol>
+    {% elif s.kind == "examples" %}
+      {% for ex in s.items %}
+      <div class="example">
+        {% if ex.title %}<p class="example-title">{{ ex.title|safe }}</p>{% endif %}
+        <p>{{ ex.text|safe }}</p>
+      </div>
+      {% endfor %}
+    {% elif s.kind == "callouts" %}
+      {% for item in s.items %}
+      <div class="callout tone-{{ s.tone }}"><p><span class="callout-icon">{{ s.icon }}</span>{{ item|safe }}</p></div>
+      {% endfor %}
+    {% elif s.kind == "bullets" %}
+      <ul class="bullets">{% for item in s.items %}<li>{{ item|safe }}</li>{% endfor %}</ul>
+    {% elif s.kind == "numbered" %}
+      <ol class="numbered">{% for item in s.items %}<li>{{ item|safe }}</li>{% endfor %}</ol>
+    {% endif %}
+  </section>
+  {% endfor %}
+</body>
+</html>
