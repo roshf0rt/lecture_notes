@@ -36,6 +36,8 @@ class Services:
     make_client: Callable[[str, str], Model]
     ring: KeyRing = field(default_factory=KeyRing)
     locks: dict[int, asyncio.Lock] = field(default_factory=dict)
+    # Notes a user has waiting or running right now.
+    queued: dict[int, int] = field(default_factory=dict)
     slots: asyncio.Semaphore | None = None
 
     def __post_init__(self) -> None:

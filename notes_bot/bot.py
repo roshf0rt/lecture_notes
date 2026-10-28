@@ -59,12 +59,14 @@ log = logging.getLogger(__name__)
 MAX_FILE_BYTES = 20 * 1024 * 1024  # Bot API refuses to download bigger files
 TEXT_EXTENSIONS = (".txt", ".md")
 STAGES = {
-    "queued": ("clock", "Жду свободного места, конспектов сейчас много…"),
+    "queued": ("clock", "В очереди"),
     "transcribing": ("transcribing", "Расшифровываю запись…"),
     "writing": ("writing", "Пишу конспект…"),
     "rendering": ("rendering", "Оформляю…"),
 }
 AWAIT_KEY, AWAIT_COLOR = "key", "color"
+# How many notes one user may have waiting or running at once.
+MAX_QUEUED_PER_USER = 5
 # Files sent together (an album, or several in a row) are collected for this long before the bot asks what to do.
 BATCH_WINDOW = 2.5
 MAX_BATCH = 10
@@ -461,7 +463,7 @@ async def on_batch_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     elif action == "split":
         await edit(query, f"{ui.e('list')} Делаю {count} отдельных конспектов, по очереди.")
         for item in pending.items:
-            await _run_job(update, context, [item.source], wait=True)
+            await _run_job(update, context, [item.source])
     else:
         await edit(query, f"{ui.e('no')} Отменено, файлы забыты.")
 
@@ -481,14 +483,29 @@ def _stage(ui: Ui, stage: str, detail: str = "") -> str:
     return f"{ui.e(icon)} {text}"
 
 
+def _notes(count: int) -> str:
+    """'1 конспект', '3 конспекта', '5 конспектов'."""
+    if count % 10 == 1 and count % 100 != 11:
+        word = "конспект"
+    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        word = "конспекта"
+    else:
+        word = "конспектов"
+    return f"{count} {word}"
+
+
+def _queue_text(ui: Ui, ahead: int, from_audio: bool) -> str:
+    if ahead == 0:
+        return _stage(ui, "transcribing" if from_audio else "writing")
+    return f"{ui.e('clock')} В очереди: перед вами {_notes(ahead)}. Начну, как освободится."
+
+
 async def _run_job(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     sources: list[Source],
-    *,
-    wait: bool = False,
 ) -> None:
-    """Make one note from the sources. With wait, queue behind the user's running note instead of refusing."""
+    """Make one note from the sources. A user's notes run one after another, in the order they were sent."""
     message = update.effective_message
     user_id = update.effective_user.id
     s = services(context)
@@ -503,40 +520,50 @@ async def _run_job(
         await reply(message, f"{ui.e('speed')} Лимит: {options.daily_limit} конспектов за сутки. Попробуйте позже.")
         return
 
-    lock = s.locks.setdefault(user_id, asyncio.Lock())
-    if lock.locked() and not wait:
-        await reply(message, f"{ui.e('clock')} Предыдущий конспект ещё готовится. Дождитесь, пожалуйста, его.")
+    ahead = s.queued.get(user_id, 0)
+    if ahead >= MAX_QUEUED_PER_USER:
+        await reply(message, f"{ui.e('clock')} У вас уже в очереди {_notes(ahead)}. Дождитесь, пожалуйста, их.")
         return
+    s.queued[user_id] = ahead + 1
+    try:
+        status = await reply(message, _queue_text(ui, ahead, any(item.is_audio for item in sources)))
+        lock = s.locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            await _make_note(message, status, s, user_id, model, source, sources, ui, options)
+    finally:
+        s.queued[user_id] -= 1
+        if s.queued[user_id] <= 0:
+            s.queued.pop(user_id, None)
 
-    from_audio = any(source.is_audio for source in sources)
-    async with lock:
-        settings = s.store.get(user_id)
-        start_stage = "transcribing" if from_audio else "writing"
-        status = await reply(message, _stage(ui, "queued" if s.slots.locked() else start_stage))
 
-        async def progress(stage: str, detail: str = "") -> None:
-            await _status(status, _stage(ui, stage, detail))
+async def _make_note(message, status, s, user_id, model, source, sources, ui, options) -> None:
+    settings = s.store.get(user_id)
+    from_audio = any(item.is_audio for item in sources)
 
-        kind = "audio" if from_audio else "text"
-        started = time.monotonic()
-        async with s.slots:
-            try:
-                result = await NotesPipeline(model).run(
-                    settings, progress=progress, sources=sources, premium=options.premium_emoji,
-                )
-            except GeminiError as error:
-                s.state.log_job(user_id, kind, False, time.monotonic() - started, str(error))
-                await _status(status, f"{ui.e('warning')} {html(str(error))}")
-                return
-            except Exception as error:
-                log.exception("Failed to build notes for user %s", user_id)
-                s.state.log_job(user_id, kind, False, time.monotonic() - started, repr(error))
-                await _status(status, f"{ui.e('warning')} Не получилось сделать конспект. Попробуйте ещё раз чуть позже.")
-                return
+    async def progress(stage: str, detail: str = "") -> None:
+        await _status(status, _stage(ui, stage, detail))
 
-        s.state.log_job(user_id, kind, True, time.monotonic() - started)
-        await _status(status, f"{ui.e('done')} Конспект готов" + (" (на общем ключе)" if source == SHARED else ""))
-        await _send(message, result, settings, from_audio)
+    await _status(status, _stage(ui, "transcribing" if from_audio else "writing"))
+    kind = "audio" if from_audio else "text"
+    started = time.monotonic()
+    async with s.slots:
+        try:
+            result = await NotesPipeline(model).run(
+                settings, progress=progress, sources=sources, premium=options.premium_emoji,
+            )
+        except GeminiError as error:
+            s.state.log_job(user_id, kind, False, time.monotonic() - started, str(error))
+            await _status(status, f"{ui.e('warning')} {html(str(error))}")
+            return
+        except Exception as error:
+            log.exception("Failed to build notes for user %s", user_id)
+            s.state.log_job(user_id, kind, False, time.monotonic() - started, repr(error))
+            await _status(status, f"{ui.e('warning')} Не получилось сделать конспект. Попробуйте ещё раз чуть позже.")
+            return
+
+    s.state.log_job(user_id, kind, True, time.monotonic() - started)
+    await _status(status, f"{ui.e('done')} Конспект готов" + (" (на общем ключе)" if source == SHARED else ""))
+    await _send(message, result, settings, from_audio)
 
 
 async def _status(status: Message, text: str) -> None:

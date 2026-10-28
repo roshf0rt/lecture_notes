@@ -595,3 +595,38 @@ def test_skipped_blocks_are_named_after_the_note(tmp_path):
     message = h.text(3, LONG_TEXT)
     assert "Примеры и кейсы" in message.replies[-1]["text"]
     assert "/settings" in message.replies[-1]["text"]
+
+
+def test_second_note_waits_in_line_instead_of_being_refused(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(3, KEY)
+    first, second = FakeMessage(text=LONG_TEXT, message_id=1), FakeMessage(text=LONG_TEXT, message_id=2)
+
+    async def both():
+        await asyncio.gather(
+            h._through_gate(on_text, 3, message=first),
+            h._through_gate(on_text, 3, message=second),
+        )
+
+    asyncio.run(both())
+    assert "Предыдущий" not in "".join(second.texts())
+    assert any("В очереди: перед вами 1" in text for text in second.texts())
+    assert "Конспект готов" in second.edits[-1] and "Конспект готов" in first.edits[-1]
+    assert len([call for call in h.calls if call[0] == "write"]) == 2
+    assert h.services.queued == {}
+
+
+def test_queue_has_a_limit_per_user(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "MAX_QUEUED_PER_USER", 1)
+    h = Harness(tmp_path)
+    h.services.keys.add(3, KEY)
+    h.services.queued[3] = 1
+    message = h.text(3, LONG_TEXT)
+    assert "уже в очереди 1 конспект" in message.replies[-1]["text"]
+    assert not h.calls
+
+
+@pytest.mark.parametrize(("count", "word"), [(1, "конспект"), (2, "конспекта"), (4, "конспекта"), (5, "конспектов"),
+                                             (11, "конспектов"), (21, "конспект")])
+def test_notes_are_counted_in_russian(count, word):
+    assert bot._notes(count) == f"{count} {word}"
