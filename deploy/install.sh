@@ -24,6 +24,7 @@ install -d -o notes-bot -g notes-bot -m 700 "$DATA_DIR"
 python3 -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$APP_DIR/venv/bin/pip" install --quiet -r "$APP_DIR/requirements.txt"
+chmod -R a+rX "$APP_DIR"
 
 install -m 644 "$APP_DIR/deploy/notes-bot.service" /etc/systemd/system/notes-bot.service
 systemctl daemon-reload

@@ -46,6 +46,7 @@ DATA_DIR=/var/lib/notes-bot
 ALLOWED_USER_IDS=$ALLOWED
 EOF
   chmod 600 "$ENV_FILE"
+  umask 022
   unset TOKEN ALLOWED
   echo "Saved $ENV_FILE"
 else
