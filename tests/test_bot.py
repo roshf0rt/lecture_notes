@@ -152,6 +152,13 @@ def test_key_pasted_without_the_command_is_detected(tmp_path):
     assert services.keys.load(4) == SAVED_KEY
 
 
+def test_key_in_the_newer_format_is_detected_too(tmp_path):
+    context, services = _context(tmp_path)
+    key = "AQ.TestKeyValue1234567890abcdefghijklmnop"
+    asyncio.run(on_text(_update(4, message=FakeMessage(text=key)), context))
+    assert services.keys.load(4) == key
+
+
 def test_rejected_key_is_not_saved_and_the_user_can_retry(tmp_path):
     context, services = _context(tmp_path)
     asyncio.run(on_setkey(_update(4, message=FakeMessage(text="/setkey")), context))

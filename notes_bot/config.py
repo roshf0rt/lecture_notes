@@ -31,7 +31,7 @@ class Config:
         env = os.environ
         return cls(
             telegram_token=_required("TELEGRAM_BOT_TOKEN"),
-            gemini_model=env.get("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+            gemini_model=env.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip(),
             data_dir=Path(env.get("DATA_DIR", "data")),
             allowed_user_ids=_user_ids(env.get("ALLOWED_USER_IDS", "")),
         )

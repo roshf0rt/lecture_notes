@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 
 MAX_FILE_BYTES = 20 * 1024 * 1024  # Bot API refuses to download bigger files
 TEXT_EXTENSIONS = (".txt", ".md")
-KEY_PATTERN = re.compile(r"AIza[0-9A-Za-z_-]{30,60}")
+KEY_PATTERN = re.compile(r"(?:AIza|AQ\.)[0-9A-Za-z_.-]{30,80}")
 STAGES = {
     "transcribing": "🎙 Расшифровываю запись…",
     "writing": "✍️ Пишу конспект…",
@@ -94,7 +94,7 @@ async def on_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     context.user_data["awaiting"] = "key"
     await update.effective_message.reply_text(
-        "Пришлите ключ Gemini одним сообщением. Он начинается с AIza.\n"
+        "Пришлите ключ Gemini одним сообщением.\n"
         "Получить ключ: https://aistudio.google.com/apikey"
     )
 

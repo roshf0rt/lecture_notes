@@ -175,11 +175,20 @@ def test_is_media_name(name, expected):
     assert is_media_name(name) is expected
 
 
-def test_check_key_fetches_the_configured_model(make_server):
-    server = make_server(200, {"name": "models/gemini-test"})
+def test_check_key_makes_a_tiny_generation_request(make_server):
+    server = make_server(200, _reply("ok"))
     asyncio.run(_client(server).check_key())
-    assert server.requests[0]["method"] == "GET"
-    assert server.requests[0]["path"].endswith("/models/gemini-test")
+    request = server.requests[0]
+    assert request["method"] == "POST"
+    assert request["path"].endswith("gemini-test:generateContent")
+    assert request["body"]["generationConfig"]["maxOutputTokens"] == 16
+
+
+@pytest.mark.parametrize(("status", "expected"), [(404, "недоступна"), (503, "перегружен")])
+def test_model_problems_get_their_own_messages(make_server, status, expected):
+    server = make_server(status, {"error": {"code": status, "message": "x", "status": "ERR"}})
+    with pytest.raises(GeminiError, match=expected):
+        asyncio.run(_client(server).write("Текст лекции. " * 20, ["takeaways"], "medium"))
 
 
 def test_check_key_reports_a_rejected_key(make_server):

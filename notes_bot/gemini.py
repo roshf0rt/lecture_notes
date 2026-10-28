@@ -61,6 +61,10 @@ def _describe(error: errors.APIError) -> str:
         return "Превышен лимит запросов к Gemini. Подождите минуту или попробуйте позже: бесплатные квоты обновляются ежедневно."
     if error.code in (401, 403) or "API key" in (error.message or ""):
         return "Gemini не принял ключ или у него нет доступа к модели. Проверьте ключ в Google AI Studio."
+    if error.code == 404:
+        return "Выбранная модель Gemini сейчас недоступна. Попробуйте позже или сообщите администратору бота."
+    if error.code == 503:
+        return "Gemini сейчас перегружен. Попробуйте через минуту."
     return f"Gemini вернул ошибку {error.code}. Попробуйте ещё раз."
 
 
@@ -85,9 +89,13 @@ class GeminiClient:
         self._model = model
 
     async def check_key(self) -> None:
-        """Raise GeminiError unless the key is accepted and can use the configured model."""
+        """Raise GeminiError unless the key is accepted and the model answers. Models.get is not enough: it can succeed for a model that cannot generate."""
         async with _friendly_errors():
-            await self._client.aio.models.get(model=self._model)
+            await self._client.aio.models.generate_content(
+                model=self._model,
+                contents="ping",
+                config=types.GenerateContentConfig(max_output_tokens=16),
+            )
 
     async def transcribe(self, audio: bytes, filename: str) -> str:
         mime = _mime_type(filename)
