@@ -36,6 +36,28 @@ def _reply_snippet(response: httpx.Response) -> str:
     return f" Ответ поставщика ({response.status_code}): {text}" if text else ""
 
 
+def _read_stream(response: httpx.Response) -> tuple[str, bool]:
+    """Join the pieces of a server-sent event stream into one reply."""
+    pieces: list[str] = []
+    truncated = False
+    for line in response.text.splitlines():
+        if not line.startswith("data:") or line.strip() == "data: [DONE]":
+            continue
+        try:
+            chunk = json.loads(line[len("data:"):])
+            choice = chunk["choices"][0]
+        except (ValueError, KeyError, IndexError, TypeError):
+            continue
+        delta = choice.get("delta") or {}
+        content = delta.get("content")
+        if isinstance(content, str):
+            pieces.append(content)
+        truncated = truncated or choice.get("finish_reason") == "length"
+    if not pieces and not truncated:
+        raise GeminiError(f"Поставщик ключа вернул ответ, который бот не понимает.{_reply_snippet(response)}", OTHER)
+    return "".join(pieces), truncated
+
+
 def _supplier_says(response: httpx.Response) -> str:
     """The supplier's own words, so a rejected key shows why. Any key-looking text is hidden."""
     text = KEY_IN_TEXT.sub("sk-cvc-…", response.text[:200]).strip()
@@ -93,7 +115,7 @@ class GatewayClient:
             response = await self._http.post(
                 f"{self._url}/chat/completions",
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                json={"model": self._model, "messages": messages, "max_tokens": max_tokens, "temperature": 0},
+                json={"model": self._model, "messages": messages, "max_tokens": max_tokens, "temperature": 0, "stream": False},
             )
         except httpx.HTTPError as error:
             # Timeouts often have an empty message, so the type is logged too.
@@ -102,6 +124,9 @@ class GatewayClient:
             raise GeminiError("Не получилось связаться с поставщиком ключа. Попробуйте позже.", UNREACHABLE) from error
         if response.status_code != 200:
             raise _classify(response)
+        if response.text.lstrip().startswith("data:"):
+            # Some replies arrive as a stream of server-sent events even when not asked for.
+            return _read_stream(response)
         try:
             choice = response.json()["choices"][0]
             content = choice["message"].get("content") or ""

@@ -173,3 +173,32 @@ def test_unreadable_reply_shows_what_the_supplier_sent_without_the_key():
         asyncio.run(_client(lambda request: httpx.Response(200, json={"oops": GATEWAY_KEY})).check_key())
     assert "не понимает" in str(caught.value) and "Ответ поставщика (200)" in str(caught.value)
     assert GATEWAY_KEY not in str(caught.value)
+
+
+def test_a_streamed_reply_is_joined_into_one_text():
+    stream = (
+        'data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'
+        'data: {"choices":[{"index":0,"delta":{"content":"Первая "},"finish_reason":null}]}\n\n'
+        'data: {"choices":[{"index":0,"delta":{"content":"часть"},"finish_reason":"stop"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, text=stream, headers={"content-type": "text/event-stream"})
+
+    text, truncated = asyncio.run(_client(handler)._post([], 16))
+    assert text == "Первая часть" and truncated is False
+    assert seen[0]["stream"] is False
+
+
+def test_requests_ask_for_a_plain_reply():
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return _reply("ok")
+
+    asyncio.run(_client(handler).check_key())
+    assert seen[0]["stream"] is False
