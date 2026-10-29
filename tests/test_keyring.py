@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-from notes_bot.gemini import AUTH, MODEL, OVERLOADED, QUOTA, GeminiError
+from notes_bot.gemini import AUTH, MODEL, OTHER, OVERLOADED, QUOTA, GeminiError
 from notes_bot import keyring
 from notes_bot.keyring import QUOTA_ZONE, KeyRing, RotatingModel, seconds_to_quota_reset
 
@@ -109,12 +109,28 @@ def test_overload_is_retried_on_the_same_key():
     assert slept == [4.0, 8.0]
 
 
-def test_other_errors_are_not_retried_on_other_keys():
+def test_unexpected_errors_are_not_retried_on_other_keys():
     ring = KeyRing(Clock())
-    model, calls, _ = _model(["a", "b"], {"a": [GeminiError("gone", MODEL)]}, ring)
-    with pytest.raises(GeminiError, match="gone"):
-        asyncio.run(model.check_key())
+    model, calls, _ = _model(["a", "b"], {"a": [GeminiError("broken", OTHER)]}, ring)
+    with pytest.raises(GeminiError, match="broken"):
+        asyncio.run(model.transcribe(b"", "x.ogg"))
     assert calls == ["a"]
+
+
+def test_overloaded_or_unavailable_key_is_skipped_for_the_next_one():
+    ring = KeyRing(Clock())
+    script = {"a": [GeminiError("busy", OVERLOADED)] * 3, "b": []}
+    model, calls, _ = _model(["a", "b"], script, ring)
+    assert asyncio.run(model.transcribe(b"", "x.ogg")) == "b"
+    assert ring.resting("a") == 300
+    assert calls[-1] == "b"
+
+
+def test_model_missing_from_a_package_moves_on_to_another_key():
+    ring = KeyRing(Clock())
+    model, calls, _ = _model(["a", "b"], {"a": [GeminiError("no model", MODEL)]}, ring)
+    assert asyncio.run(model.transcribe(b"", "x.ogg")) == "b"
+    assert ring.resting("a") == 3600
 
 
 def test_quota_reset_is_counted_to_the_next_midnight():

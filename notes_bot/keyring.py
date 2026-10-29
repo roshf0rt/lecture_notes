@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import TypeVar
 from zoneinfo import ZoneInfo
 
-from .gemini import AUTH, OVERLOADED, QUOTA, GeminiError
+from .gemini import AUTH, MODEL, OVERLOADED, QUOTA, GeminiError
 from .notes import NoteDocument
 from .pipeline import Model
 
@@ -24,6 +24,8 @@ log = logging.getLogger(__name__)
 T = TypeVar("T")
 MINUTE_COOLDOWN = 60.0
 BAD_KEY_COOLDOWN = 3600.0
+# A key whose supplier is overloaded is skipped for a while; other keys still work.
+OVERLOAD_COOLDOWN = 300.0
 OVERLOAD_RETRIES = 2
 OVERLOAD_DELAY = 4.0
 # Free daily quotas reset at midnight Pacific time.
@@ -75,8 +77,10 @@ class KeyRing:
 
 
 def _rest_for(error: GeminiError) -> float:
-    if error.kind == AUTH:
+    if error.kind in (AUTH, MODEL):
         return BAD_KEY_COOLDOWN
+    if error.kind == OVERLOADED:
+        return OVERLOAD_COOLDOWN
     if error.daily:
         return seconds_to_quota_reset()
     return max(error.retry_after or 0.0, MINUTE_COOLDOWN)
@@ -116,7 +120,7 @@ class RotatingModel:
                     if error.kind == OVERLOADED and attempt < OVERLOAD_RETRIES:
                         await self._sleep(OVERLOAD_DELAY * (attempt + 1))
                         continue
-                    if error.kind not in (QUOTA, AUTH):
+                    if error.kind not in (QUOTA, AUTH, MODEL, OVERLOADED):
                         raise
                     log.info("Gemini key %s is resting: %s", _fingerprint(api_key), error.kind)
                     self._ring.rest(api_key, _rest_for(error))
