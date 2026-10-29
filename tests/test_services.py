@@ -92,7 +92,7 @@ def test_every_menu_button_fits_telegram_callback_limit():
 def test_menu_marks_current_choices():
     settings = UserSettings(output="tg")
     _, markup = settings_view(PLAIN, "output", settings)
-    assert any(label.startswith("✅") and "Только сообщения" in label for label in _labels(markup))
+    assert any(label.startswith("✅") and "Только полный текст в чате" in label for label in _labels(markup))
 
     assert apply_choice(settings, "length", "long").length == "long"
     assert apply_choice(settings, "theme", "nope") == settings
@@ -107,7 +107,7 @@ def test_preset_is_marked_even_after_a_custom_colour_was_set():
 
 def test_premium_buttons_carry_the_icon_outside_the_text():
     _, markup = settings_view(PREMIUM, "output", UserSettings(output="pdf"))
-    button = markup.inline_keyboard[1][0]
+    button = markup.inline_keyboard[2][0]
     assert button.text == "Только PDF"
     assert button.icon_custom_emoji_id.isdigit()
     assert button.style == "success"
@@ -115,7 +115,7 @@ def test_premium_buttons_carry_the_icon_outside_the_text():
 
 def test_plain_buttons_keep_the_emoji_in_the_text():
     _, markup = settings_view(PLAIN, "output", UserSettings(output="pdf"))
-    button = markup.inline_keyboard[1][0]
+    button = markup.inline_keyboard[2][0]
     assert button.text == "✅ Только PDF"
     assert button.icon_custom_emoji_id is None
 
@@ -152,7 +152,7 @@ def test_premium_can_be_stripped_from_a_message_and_keyboard():
     text, markup = settings_view(PREMIUM, "output", UserSettings(output="pdf"))
     plain_text, plain_markup = without_premium(text, markup)
     assert "<tg-emoji" not in plain_text and "📁" in plain_text
-    first = plain_markup.inline_keyboard[1][0]
+    first = plain_markup.inline_keyboard[2][0]
     assert first.text == "✅ Только PDF" and first.icon_custom_emoji_id is None
 
     _, reply_markup = without_premium("", main_keyboard(PREMIUM, True))
@@ -251,7 +251,7 @@ def test_the_short_length_is_not_a_choice_the_user_can_save():
     assert Settings.from_dict({"length": "onepage"}).length == DEFAULT_LENGTH
     assert Settings.from_dict({"output": "tg_one"}).output == "tg_one"
     _, markup = settings_view(PLAIN, "output", UserSettings(output="tg_one"))
-    assert any("Одно короткое сообщение" in label for label in _labels(markup))
+    assert any("одно короткое сообщение" in label for label in _labels(markup))
 
 
 def test_extras_reach_the_model_but_not_the_one_message_format():
@@ -273,3 +273,30 @@ def test_extras_menu_marks_the_chosen_ones():
     labels = _labels(markup)
     assert "✅ Термины и определения" in labels and "❌ Что запомнить" in labels
     assert "st:ext:questions" in _button_data(markup)
+
+
+def test_pdf_with_one_short_message_writes_the_note_then_shortens_it_from_the_note():
+    calls = []
+
+    class Writer(FakeModel):
+        async def write(self, transcript, length, language="auto", extras=()):
+            calls.append((length, transcript, tuple(extras)))
+            return _note("Главная идея. " * 3, 3)
+
+    settings = UserSettings(output="both_one", length="long", extras=("remember",))
+    result, _ = _run(NotesPipeline(Writer()), settings, text=LONG_TRANSCRIPT)
+    assert result.pdf.startswith(b"%PDF") and len(result.messages) == 1
+    assert [call[0] for call in calls] == ["long", "onepage"]
+    assert calls[0][1] == LONG_TRANSCRIPT and calls[0][2] == ("remember",)
+    assert "Раздел 0" in calls[1][1] and calls[1][2] == ()  # the second call reads the note, not the lecture
+
+
+def test_if_shortening_fails_the_chat_gets_the_full_note_cut_to_one_message():
+    class Flaky(FakeModel):
+        async def write(self, transcript, length, language="auto", extras=()):
+            if length == "onepage":
+                raise GeminiError("перегрузка")
+            return _note("Главная идея. " * 3, 3)
+
+    result, _ = _run(NotesPipeline(Flaky()), UserSettings(output="both_one"), text=LONG_TRANSCRIPT)
+    assert result.pdf is not None and len(result.messages) == 1 and "Раздел 0" in result.messages[0]

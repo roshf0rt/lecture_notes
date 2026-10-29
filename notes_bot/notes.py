@@ -163,6 +163,26 @@ def note_schema() -> dict:
     }
 
 
+def document_text(doc: NoteDocument) -> str:
+    """The note as plain text, to be shortened by the model without reading the whole lecture again."""
+    lines = [doc.title]
+    if doc.main_idea:
+        lines.append(f"Главная идея: {doc.main_idea}")
+    for number, section in enumerate(doc.sections, start=1):
+        lines.append(f"\n{number}. {section.heading}")
+        for element in section.elements:
+            if element.type in (BULLETS, NUMBERED, CHECKLIST):
+                lines.extend(f"- {item}" for item in element.items)
+            elif element.type == TABLE:
+                headers, rows = element.aligned()
+                lines.extend(" | ".join(cell for cell in row if cell) for row in rows)
+            elif element.type == TOGGLE:
+                lines.append(f"{element.title}: {element.text}".strip(": "))
+            else:
+                lines.append(element.text)
+    return "\n".join(lines)
+
+
 SYSTEM_PROMPT = """Ты редактор учебных конспектов. По расшифровке лекции или текста ты делаешь полный, аккуратный и хорошо структурированный конспект для повторения и подготовки к экзамену.
 
 Структура:

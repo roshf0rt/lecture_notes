@@ -13,12 +13,13 @@ from .themes import CUSTOM, THEMES
 from .ui import Ui, html
 
 OUTPUT_TITLES = {
-    "both": "PDF и сообщения",
+    "both": "PDF и полный текст в чате",
+    "both_one": "PDF и одно короткое сообщение",
     "pdf": "Только PDF",
-    "tg": "Только сообщения",
-    "tg_one": "Одно короткое сообщение",
+    "tg": "Только полный текст в чате",
+    "tg_one": "Только одно короткое сообщение",
 }
-OUTPUT_ICONS = {"both": "stack", "pdf": "pdf", "tg": "message", "tg_one": "clip"}
+OUTPUT_ICONS = {"both": "stack", "both_one": "clip", "pdf": "pdf", "tg": "message", "tg_one": "clip"}
 LANGUAGE_TITLES = {"auto": "Как в материале", "ru": "Всегда по-русски"}
 AI_STUDIO = "https://aistudio.google.com/apikey"
 
@@ -128,8 +129,9 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
         rows = [[_choice(ui, settings.output == key, OUTPUT_ICONS[key], title, f"st:set:output:{key}")]
                 for key, title in OUTPUT_TITLES.items()]
         text = (f"{ui.e('format')} <b>Как присылать конспект</b>\n\n"
-                "«PDF и сообщения» присылает оба варианта: сначала текст прямо в чате, потом PDF с цветными блоками. "
-                "«Одно короткое сообщение» пишет совсем коротко, чтобы конспект поместился в одно сообщение Telegram.")
+                "<b>Полный текст в чате</b>: конспект целиком, несколько сообщений подряд. "
+                "<b>Одно короткое сообщение</b>: выжимка, которая помещается в одно сообщение Telegram. "
+                "С PDF короткое сообщение идёт как краткое содержание, а полный конспект лежит в файле.")
         return text, InlineKeyboardMarkup([*rows, [back]])
 
     if name == "length":

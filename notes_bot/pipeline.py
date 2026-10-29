@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,13 +10,14 @@ from typing import Protocol
 from .audio import AudioError, prepare
 from .blocks import ONE_MESSAGE_LENGTH_ID
 from .gemini import INLINE_LIMIT_BYTES, GeminiError
-from .notes import NoteDocument
+from .notes import NoteDocument, document_text
 from .render_pdf import render_pdf
 from .transcript import junk_reason
 from .render_tg import fit_one_message, render_messages
 from .settings import UserSettings
 from .themes import get_theme
 
+log = logging.getLogger(__name__)
 MIN_TEXT_CHARS = 100
 MAX_TEXT_CHARS = 400_000
 # Called with a stage name and, for several recordings, which one is being read ("2 из 3").
@@ -90,12 +92,24 @@ class NotesPipeline:
         if settings.output == "tg_one":
             return Result(document, text, messages=fit_one_message(document, premium=premium))
         pdf = messages = None
-        if settings.output in ("pdf", "both"):
+        if settings.output == "both_one":
+            messages = await self._short_message(document, settings.language, premium)
+        if settings.output in ("pdf", "both", "both_one"):
             theme = get_theme(settings.theme, settings.custom_color)
             pdf = await asyncio.to_thread(render_pdf, document, theme)
         if settings.output in ("tg", "both"):
             messages = render_messages(document, premium=premium)
         return Result(document, text, pdf=pdf, messages=messages)
+
+    async def _short_message(self, document: NoteDocument, language: str, premium: bool) -> list[str]:
+        """The full note stays in the PDF; the chat gets a short version of it, written from the note itself."""
+        try:
+            short = await self._model.write(document_text(document), ONE_MESSAGE_LENGTH_ID, language, ())
+            if short.sections or short.main_idea:
+                return fit_one_message(short, premium=premium)
+        except GeminiError:
+            log.warning("Could not shorten the note; cutting the full one to a message instead")
+        return fit_one_message(document, premium=premium)
 
     async def read(
         self,

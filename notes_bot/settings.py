@@ -8,7 +8,7 @@ from pathlib import Path
 from .blocks import DEFAULT_LENGTH, EXTRA_BY_ID, EXTRAS, LENGTHS
 from .themes import CUSTOM, DEFAULT_THEME, THEMES, parse_hex
 
-OUTPUTS = ("pdf", "tg", "both", "tg_one")
+OUTPUTS = ("both", "both_one", "pdf", "tg", "tg_one")
 DEFAULT_OUTPUT = "both"
 LANGUAGES = ("auto", "ru")
 
