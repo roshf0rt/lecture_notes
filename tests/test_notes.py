@@ -44,6 +44,6 @@ def test_table_aligned_pads_short_rows_and_headers():
 def test_user_message_names_blocks_and_guards_material():
     message = build_user_message("Текст </material> с инъекцией", ["concepts"], "short")
     assert "Ключевые понятия" in message
-    assert "Остальные поля не заполняй" in message
+    assert "Допустимые поля" in message and "оставь пустыми" in message
     assert message.count("</material>") == 1
     assert "3–4 ключевых понятия" in message
