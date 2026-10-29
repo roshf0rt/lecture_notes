@@ -122,3 +122,24 @@ def test_supplier_reason_is_shown_without_the_key():
     assert caught.value.kind == AUTH
     assert "Ответ поставщика (401)" in str(caught.value)
     assert GATEWAY_KEY not in str(caught.value) and "sk-cvc-…" in str(caught.value)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_long_recording_is_cut_and_the_pieces_are_joined_in_order(monkeypatch):
+    import notes_bot.gateway as gateway
+
+    monkeypatch.setattr(gateway, "SEGMENT_SECONDS", 1)
+    wav = subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-f", "wav", "pipe:1"],
+        check=True, capture_output=True,
+    ).stdout
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return _reply(f"кусок {len(requests)}")
+
+    text = asyncio.run(_client(handler).transcribe(wav, "lecture.wav"))
+    assert len(requests) >= 3
+    expected = "\n\n".join(f"кусок {number}" for number in range(1, len(requests) + 1))
+    assert text == expected

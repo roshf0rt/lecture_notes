@@ -13,7 +13,7 @@ import re
 
 import httpx
 
-from .audio import canonical_extension, to_mp3
+from .audio import AudioError, canonical_extension, ffmpeg_available, split_mp3, to_mp3
 from .gemini import AUTH, MODEL, OTHER, OVERLOADED, QUOTA, TRANSCRIBE_PROMPT, UNREACHABLE, GeminiError
 from .notes import SYSTEM_PROMPT, NoteDocument, build_user_message, note_schema
 
@@ -21,6 +21,8 @@ log = logging.getLogger(__name__)
 
 GATEWAY_URL = "https://api.aikeysforyou.com/v1"
 MAX_OUTPUT_TOKENS = 16_000
+# The supplier is slow on long recordings and the request times out, so long audio is cut into pieces.
+SEGMENT_SECONDS = 20 * 60
 REQUEST_TIMEOUT = 300.0
 BAD_FORMAT = "Конспект получился в неверном формате. Попробуйте ещё раз."
 
@@ -105,26 +107,33 @@ class GatewayClient:
 
     async def transcribe(self, audio: bytes, filename: str) -> str:
         extension = canonical_extension(filename) or ".ogg"
-        if extension in (".mp3", ".wav"):
-            data, audio_format = audio, extension[1:]
+        if ffmpeg_available():
+            # Every piece goes out as MP3, the audio format the supplier takes; long recordings are cut first.
+            try:
+                pieces = await split_mp3(audio, extension, SEGMENT_SECONDS)
+            except AudioError as error:
+                raise GeminiError(str(error)) from error
         else:
-            # The gateway takes only WAV and MP3 audio input, so other formats are converted first.
-            data, audio_format = await to_mp3(audio, extension), "mp3"
+            pieces = [await to_mp3(audio, extension)] if extension != ".mp3" else [audio]
+        texts = [await self._transcribe_piece(piece) for piece in pieces]
+        text = "\n\n".join(part for part in texts if part)
+        if not text:
+            raise GeminiError("В записи не нашлось речи.")
+        return text
+
+    async def _transcribe_piece(self, data: bytes) -> str:
         encoded = base64.b64encode(data).decode("ascii")
         messages = [{
             "role": "user",
             "content": [
                 {"type": "text", "text": TRANSCRIBE_PROMPT},
-                {"type": "input_audio", "input_audio": {"data": encoded, "format": audio_format}},
+                {"type": "input_audio", "input_audio": {"data": encoded, "format": "mp3"}},
             ],
         }]
         text, truncated = await self._post(messages, MAX_OUTPUT_TOKENS)
         if truncated:
-            raise GeminiError("Запись слишком длинная для одного ответа поставщика. Разрежьте её на части.")
-        text = text.strip()
-        if not text:
-            raise GeminiError("В записи не нашлось речи.")
-        return text
+            raise GeminiError("Часть записи слишком длинная для одного ответа поставщика. Разрежьте запись на части поменьше.")
+        return text.strip()
 
     async def write(self, transcript: str, enabled, length_id: str, language: str = "auto") -> NoteDocument:
         enabled = list(enabled)

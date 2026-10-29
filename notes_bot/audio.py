@@ -172,6 +172,32 @@ async def to_mp3(data: bytes, extension: str) -> bytes:
     return await _ffmpeg(data, None, extension, ["-c:a", "libmp3lame", "-b:a", "32k"], "output.mp3")
 
 
+async def split_mp3(data: bytes, extension: str, seconds: int) -> list[bytes]:
+    """Cut the recording into MP3 pieces of about `seconds` each, in order."""
+    with tempfile.TemporaryDirectory(prefix="notes-bot-") as folder:
+        source = Path(folder) / f"input{extension}"
+        source.write_bytes(data)
+        pattern = Path(folder) / "part_%03d.mp3"
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k",
+            "-f", "segment", "-segment_time", str(seconds), str(pattern),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(process.communicate(), CONVERT_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise AudioError("Запись слишком долго конвертируется.") from None
+        if process.returncode != 0:
+            log.warning("ffmpeg split failed: %s", stderr.decode(errors="replace")[-500:])
+            raise AudioError("Не получилось разрезать запись.")
+        parts = sorted(Path(folder).glob("part_*.mp3"))
+        return [part.read_bytes() for part in parts if part.stat().st_size > 0]
+
+
 async def prepare(
     data: bytes | None,
     filename: str | None,
