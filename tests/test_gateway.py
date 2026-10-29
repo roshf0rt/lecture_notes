@@ -111,3 +111,12 @@ def test_transcribe_sends_audio_as_mp3_input():
 def test_key_report_warns_that_a_third_party_sees_the_data():
     text = key_report(Ui(premium=False), [("sk-c…ce2c", GATEWAY_ADDED)])
     assert "добавлен" in text and GATEWAY_WARNING in text
+
+
+def test_supplier_reason_is_shown_without_the_key():
+    body = {"error": f"invalid key {GATEWAY_KEY} for this package"}
+    with pytest.raises(GeminiError) as caught:
+        asyncio.run(_client(lambda request: httpx.Response(401, json=body)).check_key())
+    assert caught.value.kind == AUTH
+    assert "Ответ поставщика (401)" in str(caught.value)
+    assert GATEWAY_KEY not in str(caught.value) and "sk-cvc-…" in str(caught.value)

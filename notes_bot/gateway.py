@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 
 import httpx
 
@@ -24,7 +25,21 @@ REQUEST_TIMEOUT = 300.0
 BAD_FORMAT = "Конспект получился в неверном формате. Попробуйте ещё раз."
 
 
+KEY_IN_TEXT = re.compile(r"sk-cvc-[0-9A-Za-z]+")
+
+
+def _supplier_says(response: httpx.Response) -> str:
+    """The supplier's own words, so a rejected key shows why. Any key-looking text is hidden."""
+    text = KEY_IN_TEXT.sub("sk-cvc-…", response.text[:200]).strip()
+    return f" Ответ поставщика ({response.status_code}): {text}" if text else ""
+
+
 def _classify(response: httpx.Response) -> GeminiError:
+    error = _classify_kind(response)
+    return GeminiError(f"{error}{_supplier_says(response)}", error.kind, error.retry_after, error.daily)
+
+
+def _classify_kind(response: httpx.Response) -> GeminiError:
     code = response.status_code
     body = response.text[:300].lower()
     if code == 429:
