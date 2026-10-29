@@ -8,8 +8,8 @@ from pathlib import Path
 from .blocks import BLOCKS, DEFAULT_BLOCKS, DEFAULT_LENGTH, LENGTH_BY_ID
 from .themes import CUSTOM, DEFAULT_THEME, THEMES, parse_hex
 
-OUTPUTS = ("pdf", "tg")
-DEFAULT_OUTPUT = "pdf"
+OUTPUTS = ("pdf", "tg", "both")
+DEFAULT_OUTPUT = "both"
 LANGUAGES = ("auto", "ru")
 
 

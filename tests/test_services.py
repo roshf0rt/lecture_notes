@@ -81,7 +81,7 @@ def test_every_menu_button_fits_telegram_callback_limit():
 def test_menu_marks_current_choices():
     settings = UserSettings(output="tg")
     _, markup = settings_view(PLAIN, "output", settings)
-    assert any(label.startswith("✅") and "Telegram" in label for label in _labels(markup))
+    assert any(label.startswith("✅") and "Только сообщения" in label for label in _labels(markup))
 
     assert apply_choice(settings, "length", "long").length == "long"
     assert apply_choice(settings, "theme", "nope") == settings
@@ -96,16 +96,16 @@ def test_preset_is_marked_even_after_a_custom_colour_was_set():
 
 def test_premium_buttons_carry_the_icon_outside_the_text():
     _, markup = settings_view(PREMIUM, "output", UserSettings(output="pdf"))
-    button = markup.inline_keyboard[0][0]
-    assert button.text == "PDF-файл"
+    button = markup.inline_keyboard[1][0]
+    assert button.text == "Только PDF"
     assert button.icon_custom_emoji_id.isdigit()
     assert button.style == "success"
 
 
 def test_plain_buttons_keep_the_emoji_in_the_text():
     _, markup = settings_view(PLAIN, "output", UserSettings(output="pdf"))
-    button = markup.inline_keyboard[0][0]
-    assert button.text == "✅ PDF-файл"
+    button = markup.inline_keyboard[1][0]
+    assert button.text == "✅ Только PDF"
     assert button.icon_custom_emoji_id is None
 
 
@@ -141,8 +141,8 @@ def test_premium_can_be_stripped_from_a_message_and_keyboard():
     text, markup = settings_view(PREMIUM, "output", UserSettings(output="pdf"))
     plain_text, plain_markup = without_premium(text, markup)
     assert "<tg-emoji" not in plain_text and "📁" in plain_text
-    first = plain_markup.inline_keyboard[0][0]
-    assert first.text == "✅ PDF-файл" and first.icon_custom_emoji_id is None
+    first = plain_markup.inline_keyboard[1][0]
+    assert first.text == "✅ Только PDF" and first.icon_custom_emoji_id is None
 
     _, reply_markup = without_premium("", main_keyboard(PREMIUM, True))
     assert reply_markup.keyboard[0][0].text == "⚙ Настройки"
@@ -198,3 +198,12 @@ def test_welcome_and_help_name_the_real_file_limit():
     assert "до 2 ГБ" in welcome(PLAIN, True, False, local_api=True)
     assert "до 2 ГБ" in help_text(PLAIN, local_api=True)
     assert "20 МБ" not in welcome(PLAIN, True, False, local_api=True)
+
+
+def test_both_outputs_are_the_default_and_produce_pdf_and_messages():
+    assert UserSettings().output == "both"
+    model = FakeModel()
+    result, _ = _run(NotesPipeline(model), UserSettings(), text=LONG_TRANSCRIPT)
+    assert result.pdf.startswith(b"%PDF") and result.messages
+    tg_only, _ = _run(NotesPipeline(model), UserSettings(output="tg"), text=LONG_TRANSCRIPT)
+    assert tg_only.pdf is None and tg_only.messages

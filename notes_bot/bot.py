@@ -601,15 +601,15 @@ def _file_name(title: str) -> str:
 
 async def _send(message: Message, result: Result, settings: UserSettings, from_audio: bool) -> None:
     name = _file_name(result.document.title)
+    # The readable messages first, so the note is there at once; the PDF follows when both are asked for.
+    for text in result.messages or []:
+        try:
+            await message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
+        except BadRequest:
+            log.warning("Telegram rejected a MarkdownV2 message; sending it as plain text")
+            await message.reply_text(plain_text(text))
     if result.pdf is not None:
         await message.reply_document(document=io.BytesIO(result.pdf), filename=f"{name}.pdf")
-    else:
-        for text in result.messages or []:
-            try:
-                await message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
-            except BadRequest:
-                log.warning("Telegram rejected a MarkdownV2 message; sending it as plain text")
-                await message.reply_text(plain_text(text))
     if settings.send_transcript and from_audio:
         await message.reply_document(
             document=io.BytesIO(result.transcript.encode("utf-8")), filename=f"{name} — расшифровка.txt"

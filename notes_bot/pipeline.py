@@ -103,11 +103,13 @@ class NotesPipeline:
         skipped = tuple(BY_ID[block].title for block in settings.blocks if not document.has_block(block))
 
         await progress("rendering")
-        if settings.output == "pdf":
+        pdf = messages = None
+        if settings.output in ("pdf", "both"):
             theme = get_theme(settings.theme, settings.custom_color)
             pdf = await asyncio.to_thread(render_pdf, document, theme)
-            return Result(document, text, pdf=pdf, skipped=skipped)
-        return Result(document, text, messages=render_messages(document, premium=premium), skipped=skipped)
+        if settings.output in ("tg", "both"):
+            messages = render_messages(document, premium=premium)
+        return Result(document, text, pdf=pdf, messages=messages, skipped=skipped)
 
     async def _transcribe(self, source: Source) -> str:
         try:

@@ -12,8 +12,8 @@ from .settings import LANGUAGES, OUTPUTS, UserSettings
 from .themes import CUSTOM, THEMES
 from .ui import Ui, html
 
-OUTPUT_TITLES = {"pdf": "PDF-файл", "tg": "Сообщения в Telegram"}
-OUTPUT_ICONS = {"pdf": "pdf", "tg": "message"}
+OUTPUT_TITLES = {"both": "PDF и сообщения", "pdf": "Только PDF", "tg": "Только сообщения"}
+OUTPUT_ICONS = {"both": "stack", "pdf": "pdf", "tg": "message"}
 LANGUAGE_TITLES = {"auto": "Как в материале", "ru": "Всегда по-русски"}
 BLOCK_PRESETS = {
     "all": tuple(block.id for block in BLOCKS),
@@ -123,8 +123,8 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
         rows = [[_choice(ui, settings.output == key, OUTPUT_ICONS[key], title, f"st:set:output:{key}")]
                 for key, title in OUTPUT_TITLES.items()]
         text = (f"{ui.e('format')} <b>Как присылать конспект</b>\n\n"
-                "PDF — аккуратный документ с цветными блоками. Сообщения — тот же конспект прямо в чате, "
-                "длинный режется на части по 4096 знаков.")
+                "«PDF и сообщения» присылает оба варианта: сначала текст прямо в чате, потом PDF с цветными блоками. "
+                "Сообщения режутся на части по 4096 знаков.")
         return text, InlineKeyboardMarkup([*rows, [back]])
 
     if name == "length":

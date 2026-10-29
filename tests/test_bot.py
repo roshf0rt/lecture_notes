@@ -683,3 +683,13 @@ def test_three_big_parts_merge_into_one_note_without_loading_them(tmp_path):
     _answer(h, 5, question, "merge")
     assert [call[0] for call in h.calls].count("transcribe") == 3
     assert [call[0] for call in h.calls].count("write") == 1
+
+
+def test_both_formats_arrive_automatically_messages_first(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(3, KEY)
+    message = h.text(3, LONG_TEXT)
+    kinds = ["document" if "document" in reply else "text" for reply in message.replies if "document" in reply or reply.get("parse_mode")]
+    first_pdf = kinds.index("document")
+    assert first_pdf > 0 and set(kinds[:first_pdf]) == {"text"}  # the messages come before the PDF
+    assert [r for r in message.replies if "document" in r][0]["filename"] == "Лекция.pdf"

@@ -4,7 +4,7 @@ from notes_bot.settings import SettingsStore, UserSettings
 
 def test_defaults_match_the_documented_choices():
     settings = UserSettings()
-    assert settings.output == "pdf"
+    assert settings.output == "both"
     assert settings.length == "medium"
     assert settings.theme == "notion"
     assert settings.blocks == DEFAULT_BLOCKS
@@ -24,7 +24,7 @@ def test_invalid_stored_values_fall_back_to_defaults():
     settings = UserSettings.from_dict(
         {"output": "docx", "length": "huge", "theme": "neon", "blocks": ["takeaways", "bogus"]}
     )
-    assert settings.output == "pdf"
+    assert settings.output == "both"
     assert settings.length == "medium"
     assert settings.theme == "notion"
     assert settings.blocks == ("takeaways",)
