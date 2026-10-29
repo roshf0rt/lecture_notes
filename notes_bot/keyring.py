@@ -33,6 +33,13 @@ OVERLOAD_DELAY = 4.0
 QUOTA_ZONE = ZoneInfo("America/Los_Angeles")
 
 
+NO_SPEECH_KEY = (
+    "Запись нельзя расшифровать ключом поставщика: он не передаёт звук модели, и она может выдумать текст. "
+    "Добавьте ключ Google AI Studio в /keys или пришлите текст расшифровки. "
+    "Ключ поставщика подходит для конспекта по готовому тексту."
+)
+
+
 def _fingerprint(api_key: str) -> str:
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
 
@@ -105,7 +112,6 @@ class RotatingModel:
         self._sleep = sleep
         self._clients: dict[str, Model] = {}
         # Set once a gateway key has done the speech recognition, so the user can be told.
-        self.gateway_transcribed = False
 
     def _client(self, api_key: str) -> Model:
         if api_key not in self._clients:
@@ -144,25 +150,19 @@ class RotatingModel:
         await self._call(lambda client: client.check_key())
 
     def _audio_keys(self) -> list[str]:
-        """Keys for speech: Google's first. A reseller's gateway does not really take audio (the model
-        answers as if no file came), so its keys are tried only when nothing else is left."""
-        google = [key for key in self._keys if not is_gateway_key(key)]
-        resold = [key for key in self._keys if is_gateway_key(key)]
-        return [*self._ring.order(google), *self._ring.order(resold)]
+        """Keys for speech: Google's only. A reseller's gateway does not really take audio: the model
+        either asks for the file or makes up a plausible transcript of a different lecture."""
+        return self._ring.order([key for key in self._keys if not is_gateway_key(key)])
 
     async def transcribe(self, audio: bytes, filename: str) -> str:
-        used: list[str] = []
-
         async def action(client: Model) -> str:
             text = await client.transcribe(audio, filename)
-            used.append(self._current_key)
             return text
 
-        text = await self._call(action, self._audio_keys())
-        if used and is_gateway_key(used[-1]):
-            self.gateway_transcribed = True
-            log.info("Speech was recognised by a gateway key")
-        return text
+        keys = self._audio_keys()
+        if not keys:
+            raise GeminiError(NO_SPEECH_KEY)
+        return await self._call(action, keys)
 
     async def write(self, transcript: str, enabled: tuple[str, ...], length_id: str, language: str = "auto") -> NoteDocument:
         return await self._call(lambda client: client.write(transcript, enabled, length_id, language))

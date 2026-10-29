@@ -76,11 +76,12 @@ def test_speech_goes_to_google_keys_before_the_gateway_key():
     assert calls == [GOOGLE_KEY]
 
 
-def test_the_gateway_key_is_still_used_when_it_is_the_only_one():
+def test_speech_is_never_sent_to_a_gateway_key():
     calls = []
     model = RotatingModel([GATEWAY_KEY], lambda key: ScriptedClient(key, calls), KeyRing())
-    assert asyncio.run(model.transcribe(b"", "x.ogg")).startswith("расшифровка")
-    assert calls == [GATEWAY_KEY]
+    with pytest.raises(GeminiError, match="ключ Google"):
+        asyncio.run(model.transcribe(b"", "x.ogg"))
+    assert calls == []
 
 
 def test_no_note_is_made_from_a_junk_transcript():
@@ -97,25 +98,6 @@ def test_no_note_is_made_from_a_junk_transcript():
     with pytest.raises(GeminiError, match="Расшифровка не получилась"):
         asyncio.run(NotesPipeline(JunkModel()).run(
             UserSettings(), progress=progress, sources=[Source(audio=b"OggS" + b"\x00" * 60, name="v.ogg")]))
-
-
-def test_the_model_reports_when_a_gateway_key_recognised_the_speech():
-    from notes_bot.gemini import QUOTA
-
-    class QuotaGoogle(ScriptedClient):
-        async def transcribe(self, audio, filename):
-            if self.key == GOOGLE_KEY:
-                raise GeminiError("limit", QUOTA)
-            return await super().transcribe(audio, filename)
-
-    model = RotatingModel([GOOGLE_KEY, GATEWAY_KEY], lambda key: QuotaGoogle(key, []), KeyRing())
-    assert model.gateway_transcribed is False
-    asyncio.run(model.transcribe(b"", "x.ogg"))
-    assert model.gateway_transcribed is True
-
-    quiet = RotatingModel([GOOGLE_KEY], lambda key: ScriptedClient(key, []), KeyRing())
-    asyncio.run(quiet.transcribe(b"", "x.ogg"))
-    assert quiet.gateway_transcribed is False
 
 
 def _wav():
