@@ -124,8 +124,9 @@ async def edit(target, text: str, keyboard: InlineKeyboardMarkup | None = None) 
 ADDED, DUPLICATE, FULL, GATEWAY_ADDED = "added", "duplicate", "full", "gateway"
 ADDED_OUTCOMES = (ADDED, GATEWAY_ADDED)
 GATEWAY_WARNING = (
-    "Ключ работает через стороннего посредника. Ваши записи и тексты будут уходить ему, "
-    "а условия хранения данных он не публикует. Если это не подходит, удалите ключ в /keys."
+    "Ключ работает через стороннего посредника. Записи и тексты проходят через него, "
+    "дальше уходят в Google с его аккаунта, а хранения и доступа к данным он не публикует. "
+    "Если это не подходит, удалите ключ в /keys."
 )
 
 
