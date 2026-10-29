@@ -129,6 +129,7 @@ def test_long_recording_is_cut_and_the_pieces_are_joined_in_order(monkeypatch):
     import notes_bot.gateway as gateway
 
     monkeypatch.setattr(gateway, "MAX_PIECE_SECONDS", 1)
+    monkeypatch.setattr(gateway, "PIECE_GAP", 0)
     wav = subprocess.run(
         ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-f", "wav", "pipe:1"],
         check=True, capture_output=True,
@@ -201,3 +202,24 @@ def test_requests_ask_for_a_plain_reply():
 
     asyncio.run(_client(handler).check_key())
     assert seen[0]["stream"] is False
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_there_is_a_pause_between_the_pieces_but_not_before_the_first(monkeypatch):
+    import notes_bot.gateway as gateway
+
+    monkeypatch.setattr(gateway, "MAX_PIECE_SECONDS", 1)
+    monkeypatch.setattr(gateway, "PIECE_GAP", 3.0)
+    pauses = []
+
+    async def fake_sleep(seconds):
+        pauses.append(seconds)
+
+    monkeypatch.setattr(gateway.asyncio, "sleep", fake_sleep)
+    wav = subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-f", "wav", "pipe:1"],
+        check=True, capture_output=True,
+    ).stdout
+    asyncio.run(_client(lambda request: _reply("кусок")).transcribe(wav, "long.wav"))
+    assert pauses and set(pauses) == {3.0}
+    assert len(pauses) >= 2  # one before every piece after the first

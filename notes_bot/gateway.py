@@ -34,6 +34,7 @@ GATEWAY_URL = "https://api.aikeysforyou.com/v1"
 MAX_OUTPUT_TOKENS = 16_000
 PIECE_ATTEMPTS = 3
 PIECE_RETRY_DELAY = 2.0
+PIECE_GAP = 3.0  # pause between the pieces of one recording
 # Recordings longer than MAX_PIECE_SECONDS are cut into the fewest equal pieces, at pauses in the speech.
 MAX_PIECE_SECONDS = 15 * 60
 REQUEST_TIMEOUT = 300.0
@@ -165,7 +166,11 @@ class GatewayClient:
                 pieces = [await to_mp3(audio, extension)]
         except AudioError as error:
             raise GeminiError(str(error)) from error
-        texts = [await self._checked_piece(number, len(pieces), piece) for number, piece in enumerate(pieces, start=1)]
+        texts = []
+        for number, piece in enumerate(pieces, start=1):
+            if number > 1:
+                await asyncio.sleep(PIECE_GAP)  # a breath between requests to the supplier
+            texts.append(await self._checked_piece(number, len(pieces), piece))
         text = "\n\n".join(part for part in texts if part)
         if not text:
             raise GeminiError("В записи не нашлось речи.")
