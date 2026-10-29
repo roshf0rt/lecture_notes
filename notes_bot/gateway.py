@@ -14,7 +14,7 @@ import re
 import httpx
 
 from .audio import canonical_extension, to_mp3
-from .gemini import AUTH, MODEL, OTHER, OVERLOADED, QUOTA, TRANSCRIBE_PROMPT, GeminiError
+from .gemini import AUTH, MODEL, OTHER, OVERLOADED, QUOTA, TRANSCRIBE_PROMPT, UNREACHABLE, GeminiError
 from .notes import SYSTEM_PROMPT, NoteDocument, build_user_message, note_schema
 
 log = logging.getLogger(__name__)
@@ -89,7 +89,8 @@ class GatewayClient:
             )
         except httpx.HTTPError as error:
             log.warning("Gateway request failed: %s", error)
-            raise GeminiError("Не получилось связаться с поставщиком ключа. Попробуйте позже.", OTHER) from error
+            # Timeouts and dropped connections: this key is skipped for a while, another key may work.
+            raise GeminiError("Не получилось связаться с поставщиком ключа. Попробуйте позже.", UNREACHABLE) from error
         if response.status_code != 200:
             raise _classify(response)
         try:

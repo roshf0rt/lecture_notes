@@ -27,7 +27,7 @@ TRANSCRIBE_PROMPT = (
     "без пояснений, заголовков и временных меток. Если речи нет, верни пустую строку."
 )
 # What went wrong, so a caller can decide whether another key would help.
-QUOTA, AUTH, MODEL, OVERLOADED, OTHER = "quota", "auth", "model", "overloaded", "other"
+QUOTA, AUTH, MODEL, OVERLOADED, OTHER, UNREACHABLE = "quota", "auth", "model", "overloaded", "other", "unreachable"
 _RETRY_DELAY = re.compile(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s")
 
 

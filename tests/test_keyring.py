@@ -136,3 +136,13 @@ def test_model_missing_from_a_package_moves_on_to_another_key():
 def test_quota_reset_is_counted_to_the_next_midnight():
     evening = datetime(2026, 10, 27, 23, 0, tzinfo=QUOTA_ZONE)
     assert seconds_to_quota_reset(evening) == 3600
+
+
+def test_unreachable_supplier_moves_on_to_a_google_key():
+    from notes_bot.gemini import UNREACHABLE
+
+    ring = KeyRing(Clock())
+    model, calls, _ = _model(["gateway", "google"], {"gateway": [GeminiError("timeout", UNREACHABLE)]}, ring)
+    assert asyncio.run(model.transcribe(b"", "x.ogg")) == "google"
+    assert calls == ["gateway", "google"]
+    assert ring.resting("gateway") == 300

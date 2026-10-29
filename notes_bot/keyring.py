@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import TypeVar
 from zoneinfo import ZoneInfo
 
-from .gemini import AUTH, MODEL, OVERLOADED, QUOTA, GeminiError
+from .gemini import AUTH, MODEL, OVERLOADED, QUOTA, UNREACHABLE, GeminiError
 from .notes import NoteDocument
 from .pipeline import Model
 
@@ -79,7 +79,7 @@ class KeyRing:
 def _rest_for(error: GeminiError) -> float:
     if error.kind in (AUTH, MODEL):
         return BAD_KEY_COOLDOWN
-    if error.kind == OVERLOADED:
+    if error.kind in (OVERLOADED, UNREACHABLE):
         return OVERLOAD_COOLDOWN
     if error.daily:
         return seconds_to_quota_reset()
@@ -120,7 +120,7 @@ class RotatingModel:
                     if error.kind == OVERLOADED and attempt < OVERLOAD_RETRIES:
                         await self._sleep(OVERLOAD_DELAY * (attempt + 1))
                         continue
-                    if error.kind not in (QUOTA, AUTH, MODEL, OVERLOADED):
+                    if error.kind not in (QUOTA, AUTH, MODEL, OVERLOADED, UNREACHABLE):
                         raise
                     log.info("Gemini key %s is resting: %s", _fingerprint(api_key), error.kind)
                     self._ring.rest(api_key, _rest_for(error))
