@@ -223,3 +223,60 @@ def test_there_is_a_pause_between_the_pieces_but_not_before_the_first(monkeypatc
     asyncio.run(_client(lambda request: _reply("кусок")).transcribe(wav, "long.wav"))
     assert pauses and set(pauses) == {3.0}
     assert len(pauses) >= 2  # one before every piece after the first
+
+
+def test_the_limiter_never_lets_more_than_the_allowed_requests_run_at_once():
+    from notes_bot.gateway import RequestLimiter
+
+    async def scenario():
+        limiter = RequestLimiter(concurrent=2, per_minute=1000)
+        running = peak = 0
+
+        async def one():
+            nonlocal running, peak
+            async with limiter:
+                running += 1
+                peak = max(peak, running)
+                await asyncio.sleep(0.01)
+                running -= 1
+
+        await asyncio.gather(*(one() for _ in range(6)))
+        return peak
+
+    assert asyncio.run(scenario()) == 2
+
+
+def test_the_limiter_waits_when_the_minute_is_used_up():
+    from notes_bot.gateway import RequestLimiter
+
+    now = [0.0]
+    waited = []
+
+    async def sleep(seconds):
+        waited.append(round(seconds))
+        now[0] += seconds
+
+    async def scenario():
+        limiter = RequestLimiter(concurrent=5, per_minute=3, clock=lambda: now[0], sleep=sleep)
+        for _ in range(4):
+            async with limiter:
+                pass
+
+    asyncio.run(scenario())
+    assert waited == [60]  # the fourth request waits for the first to leave the window
+
+
+def test_clients_of_one_key_share_the_limiter_and_it_is_used():
+    from notes_bot.gateway import RequestLimiter
+
+    entered = []
+
+    class Counting(RequestLimiter):
+        async def __aenter__(self):
+            entered.append(1)
+            await super().__aenter__()
+
+    client = GatewayClient(GATEWAY_KEY, "gemini-3.5-flash", transport=httpx.MockTransport(lambda request: _reply("ok")),
+                           limiter=Counting())
+    asyncio.run(client.check_key())
+    assert entered == [1]

@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import re
+import time
+from collections import deque
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -113,10 +117,48 @@ def _strip_fences(text: str) -> str:
     return stripped.strip()
 
 
+class RequestLimiter:
+    """Keeps the requests made with one gateway key inside the supplier's limits, with room to spare.
+
+    The supplier allows 6 at once and 120 a minute per key. All jobs that use the key share one limiter,
+    so retries and several users together cannot go over.
+    """
+
+    def __init__(self, concurrent: int = 3, per_minute: int = 60,
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+        self._slots = asyncio.Semaphore(concurrent)
+        self._per_minute = per_minute
+        self._started: deque[float] = deque()
+        self._turn = asyncio.Lock()
+        self._clock = clock
+        self._sleep = sleep
+
+    async def __aenter__(self) -> None:
+        await self._slots.acquire()
+        try:
+            async with self._turn:
+                while True:
+                    now = self._clock()
+                    while self._started and now - self._started[0] >= 60:
+                        self._started.popleft()
+                    if len(self._started) < self._per_minute:
+                        self._started.append(now)
+                        return
+                    await self._sleep(60 - (now - self._started[0]))
+        except BaseException:
+            self._slots.release()
+            raise
+
+    async def __aexit__(self, *exc_info) -> None:
+        self._slots.release()
+
+
 class GatewayClient:
     """The same three calls as GeminiClient, so the pipeline and key rotation do not care which one runs."""
 
-    def __init__(self, api_key: str, model: str, base_url: str = GATEWAY_URL, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, api_key: str, model: str, base_url: str = GATEWAY_URL, transport: httpx.AsyncBaseTransport | None = None,
+                 limiter: RequestLimiter | None = None) -> None:
+        self._limiter = limiter
         self._api_key = api_key
         self._model = model
         self._url = base_url.rstrip("/")
@@ -125,11 +167,12 @@ class GatewayClient:
     async def _post(self, messages: list[dict], max_tokens: int) -> tuple[str, bool]:
         """Returns the reply text and whether it was cut off by the length limit."""
         try:
-            response = await self._http.post(
-                f"{self._url}/chat/completions",
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                json={"model": self._model, "messages": messages, "max_tokens": max_tokens, "temperature": 0, "stream": False},
-            )
+            async with self._limiter if self._limiter is not None else contextlib.nullcontext():
+                response = await self._http.post(
+                    f"{self._url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json={"model": self._model, "messages": messages, "max_tokens": max_tokens, "temperature": 0, "stream": False},
+                )
         except httpx.HTTPError as error:
             # Timeouts often have an empty message, so the type is logged too.
             log.warning("Gateway request failed: %s %r", type(error).__name__, str(error))

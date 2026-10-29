@@ -27,7 +27,7 @@ from telegram.ext import (
 from . import admin
 from .audio import is_media, sniff
 from .config import Config
-from .gateway import GatewayClient
+from .gateway import GatewayClient, RequestLimiter
 from .gemini import GeminiClient, GeminiError
 from .keys import KEY_PATTERN, KeyVault, is_gateway_key
 from .menus import (
@@ -640,9 +640,11 @@ async def _post_init(application: Application) -> None:
 
 def _client_factory(config: Config):
     """Keys of the resold gateway go to their own client; everything else is a Google AI Studio key."""
+    limiters: dict[str, RequestLimiter] = {}  # one per gateway key, shared by every job that uses it
+
     def make_client(api_key: str, model: str):
         if is_gateway_key(api_key):
-            return GatewayClient(api_key, config.gateway_model)
+            return GatewayClient(api_key, config.gateway_model, limiter=limiters.setdefault(api_key, RequestLimiter()))
         return GeminiClient(api_key, model)
 
     return make_client
