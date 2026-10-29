@@ -75,18 +75,18 @@ def _client(server: FakeGeminiServer) -> GeminiClient:
 
 
 def test_write_sends_json_schema_and_parses_the_note(make_server):
-    server = make_server(200, _reply(json.dumps({"title": "Тема", "icon": "🧪", "takeaways": ["Вывод"]})))
+    server = make_server(200, _reply(json.dumps({"title": "Тема", "icon": "🧪", "main_idea": "Идея", "sections": [{"heading": "Раздел", "elements": [{"type": "bullets", "items": ["Вывод"]}]}]})))
 
-    doc = asyncio.run(_client(server).write("Текст лекции. " * 20, ["takeaways"], "short"))
+    doc = asyncio.run(_client(server).write("Текст лекции. " * 20, "short"))
 
     assert doc.title == "Тема"
-    assert doc.takeaways == ["Вывод"]
+    assert doc.sections[0].elements[0].items == ["Вывод"]
     request = server.requests[0]["body"]
     assert "gemini-test:generateContent" in server.requests[0]["path"]
     assert "systemInstruction" in request
     config = request["generationConfig"]
     assert config["responseMimeType"] == "application/json"
-    assert set(config["responseJsonSchema"]["properties"]) == {"title", "icon", "takeaways"}
+    assert set(config["responseJsonSchema"]["properties"]) == {"title", "icon", "main_idea", "sections"}
 
 
 def test_transcribe_sends_inline_audio_and_returns_trimmed_text(make_server):
@@ -142,25 +142,25 @@ def test_large_audio_goes_through_files_api_and_is_deleted(make_server, monkeypa
 def test_quota_error_becomes_a_friendly_message(make_server):
     server = make_server(429, {"error": {"code": 429, "message": "quota", "status": "RESOURCE_EXHAUSTED"}})
     with pytest.raises(GeminiError, match="лимит запросов"):
-        asyncio.run(_client(server).write("Текст лекции. " * 20, ["takeaways"], "medium"))
+        asyncio.run(_client(server).write("Текст лекции. " * 20, "medium"))
 
 
 def test_bad_key_becomes_a_friendly_message(make_server):
     server = make_server(403, {"error": {"code": 403, "message": "denied", "status": "PERMISSION_DENIED"}})
     with pytest.raises(GeminiError, match="не принял ключ"):
-        asyncio.run(_client(server).write("Текст лекции. " * 20, ["takeaways"], "medium"))
+        asyncio.run(_client(server).write("Текст лекции. " * 20, "medium"))
 
 
 def test_truncated_answer_is_reported(make_server):
     server = make_server(200, _reply('{"title": "Обрыв', finish="MAX_TOKENS"))
     with pytest.raises(GeminiError, match="не уместился"):
-        asyncio.run(_client(server).write("Текст лекции. " * 20, ["takeaways"], "long"))
+        asyncio.run(_client(server).write("Текст лекции. " * 20, "long"))
 
 
 def test_malformed_json_is_reported(make_server):
     server = make_server(200, _reply("это не JSON"))
     with pytest.raises(GeminiError, match="неверном формате"):
-        asyncio.run(_client(server).write("Текст лекции. " * 20, ["takeaways"], "medium"))
+        asyncio.run(_client(server).write("Текст лекции. " * 20, "medium"))
 
 
 def test_unsupported_format_is_rejected_before_any_request(make_server):
@@ -212,7 +212,7 @@ def test_check_key_makes_a_tiny_generation_request(make_server):
 def test_model_problems_get_their_own_messages(make_server, status, expected):
     server = make_server(status, {"error": {"code": status, "message": "x", "status": "ERR"}})
     with pytest.raises(GeminiError, match=expected):
-        asyncio.run(_client(server).write("Текст лекции. " * 20, ["takeaways"], "medium"))
+        asyncio.run(_client(server).write("Текст лекции. " * 20, "medium"))
 
 
 def test_check_key_reports_a_rejected_key(make_server):

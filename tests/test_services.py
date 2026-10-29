@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from notes_bot.blocks import DEFAULT_LENGTH
 from notes_bot.gemini import GeminiError
 from notes_bot.menus import apply_choice, menu_label, settings_view
 from notes_bot.notes import NoteDocument
@@ -21,16 +22,18 @@ LONG_TRANSCRIPT = (
 
 
 class FakeModel:
-    def __init__(self) -> None:
-        self.enabled: list[str] | None = None
-
     async def transcribe(self, audio, filename):
         return LONG_TRANSCRIPT
 
-    async def write(self, transcript, enabled, length, language="auto"):
+    async def write(self, transcript, length, language="auto"):
         self.language = language
-        self.enabled = list(enabled)
-        return NoteDocument(title="Тема", concepts=[], takeaways=["Вывод " * 5], questions=["Вопрос?"])
+        return _note()
+
+
+def _note(main_idea="", count=1) -> NoteDocument:
+    return NoteDocument(title="Тема", main_idea=main_idea, sections=[
+        {"heading": f"Раздел {n}", "elements": [{"type": "bullets", "items": ["Вывод " * 5]}]} for n in range(count)
+    ])
 
 
 def _run(pipeline, settings, **kwargs):
@@ -61,10 +64,13 @@ def test_pipeline_refuses_tiny_text():
         _run(NotesPipeline(FakeModel()), UserSettings(), text="привет")
 
 
-def test_pipeline_only_sends_enabled_blocks_to_the_model():
-    model = FakeModel()
-    _run(NotesPipeline(model), UserSettings(blocks=("takeaways",)), text=LONG_TRANSCRIPT)
-    assert model.enabled == ["takeaways"]
+def test_an_empty_note_is_an_error_not_a_blank_document():
+    class Empty(FakeModel):
+        async def write(self, transcript, length, language="auto"):
+            return NoteDocument(title="Пусто")
+
+    with pytest.raises(GeminiError, match="пустой конспект"):
+        _run(NotesPipeline(Empty()), UserSettings(), text=LONG_TRANSCRIPT)
 
 
 def _labels(markup):
@@ -77,7 +83,7 @@ def _button_data(markup):
 
 def test_every_menu_button_fits_telegram_callback_limit():
     settings = UserSettings(theme="custom", custom_color="#0f766e")
-    for view in ["main", "output", "length", "language", "theme", "blocks"]:
+    for view in ["main", "output", "length", "language", "theme"]:
         _, markup = settings_view(PREMIUM, view, settings)
         for data in _button_data(markup):
             assert data is None or len(data.encode()) <= 64, data
@@ -214,36 +220,35 @@ def test_one_message_output_asks_for_the_short_length_and_fits_one_message():
     seen = {}
 
     class LengthModel(FakeModel):
-        async def write(self, transcript, enabled, length, language="auto"):
+        async def write(self, transcript, length, language="auto"):
             seen["length"] = length
-            return NoteDocument(title="Тема", main_idea="Главная идея. " * 10, takeaways=["Вывод " * 8], questions=["Вопрос?"])
+            return _note("Главная идея. " * 10, 2)
 
     result, _ = _run(NotesPipeline(LengthModel()), UserSettings(output="tg_one"), text=LONG_TRANSCRIPT)
     assert seen["length"] == "onepage"
     assert len(result.messages) == 1 and result.pdf is None
 
 
-def test_a_long_note_loses_the_least_essential_blocks_to_fit_one_message():
-    from notes_bot.notes import Concept
+def test_a_long_note_loses_its_last_sections_to_fit_one_message():
     from notes_bot.render_tg import TG_LIMIT, fit_one_message
 
     big = NoteDocument(
         title="Большая лекция",
         main_idea="Главная идея. " * 40,
-        concepts=[Concept(term=f"Понятие {n}", definition="Определение. " * 30) for n in range(12)],
-        takeaways=["Вывод. " * 30 for _ in range(6)],
-        questions=["Вопрос " * 20 for _ in range(6)],
-        practice=["Задание " * 20 for _ in range(6)],
+        sections=[
+            {"heading": f"Раздел {n}", "elements": [{"type": "paragraph", "text": "Объяснение механизма. " * 30}]}
+            for n in range(12)
+        ],
     )
     messages = fit_one_message(big)
     assert len(messages) == 1 and len(messages[0]) <= TG_LIMIT
-    assert "Главная идея" in messages[0]
+    assert "Главная идея" in messages[0] and "Раздел 0" in messages[0] and "Раздел 11" not in messages[0]
 
 
 def test_the_short_length_is_not_a_choice_the_user_can_save():
     from notes_bot.settings import UserSettings as Settings
 
-    assert Settings.from_dict({"length": "onepage"}).length == "medium"
+    assert Settings.from_dict({"length": "onepage"}).length == DEFAULT_LENGTH
     assert Settings.from_dict({"output": "tg_one"}).output == "tg_one"
     _, markup = settings_view(PLAIN, "output", UserSettings(output="tg_one"))
     assert any("Одно короткое сообщение" in label for label in _labels(markup))

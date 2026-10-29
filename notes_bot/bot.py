@@ -33,7 +33,6 @@ from .keys import KEY_PATTERN, KeyVault, is_gateway_key
 from .pdf_text import NoTextError, pdf_text
 from .menus import (
     AI_STUDIO,
-    BLOCK_PRESETS,
     MENU_ADMIN,
     MENU_HELP,
     MENU_KEYS,
@@ -191,12 +190,6 @@ async def on_settings_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         field, value = args
         settings = apply_choice(settings, field, value)
         view = field
-    elif action == "blk":
-        settings = settings.toggle_block(args[0])
-        view = "blocks"
-    elif action == "preset" and args[0] in BLOCK_PRESETS:
-        settings = replace(settings, blocks=BLOCK_PRESETS[args[0]])
-        view = "blocks"
     elif action == "raw":
         settings = replace(settings, ask_raw=not settings.ask_raw)
     elif action == "reset":

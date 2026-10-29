@@ -34,7 +34,7 @@ class ScriptedClient:
     async def transcribe(self, audio, filename):
         return await self.check_key()
 
-    async def write(self, transcript, enabled, length, language="auto"):
+    async def write(self, transcript, length, language="auto"):
         return await self.check_key()
 
 
@@ -80,7 +80,7 @@ def test_daily_quota_rests_until_pacific_midnight(monkeypatch):
     monkeypatch.setattr(keyring, "seconds_to_quota_reset", lambda: 7200.0)
     ring = KeyRing(Clock())
     model, _, _ = _model(["a", "b"], {"a": [GeminiError("limit", QUOTA, daily=True)]}, ring)
-    asyncio.run(model.write("t", ("takeaways",), "medium"))
+    asyncio.run(model.write("t", "medium"))
     assert ring.resting("a") == 7200
 
 

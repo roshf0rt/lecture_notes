@@ -47,24 +47,24 @@ def test_check_key_sends_the_bearer_token_and_the_model():
 
 
 def test_write_parses_the_note_even_inside_a_code_fence():
-    note = {"title": "Реклама", "takeaways": ["Главный вывод"], "questions": []}
+    note = {"title": "Реклама", "main_idea": "Идея", "sections": [{"heading": "Р", "elements": [{"type": "bullets", "items": ["Главный вывод"]}]}]}
     requests = []
 
     def handler(request):
         requests.append(request)
         return _reply("```json\n" + json.dumps(note, ensure_ascii=False) + "\n```")
 
-    document = asyncio.run(_client(handler).write("Текст лекции. " * 20, ["takeaways"], "medium"))
+    document = asyncio.run(_client(handler).write("Текст лекции. " * 20, "medium"))
     assert document.title == "Реклама"
     body = _seen(requests)[0]
-    assert body["messages"][0]["role"] == "system" and "takeaways" in body["messages"][0]["content"]
+    assert body["messages"][0]["role"] == "system" and "sections" in body["messages"][0]["content"]
 
 
 def test_truncated_note_and_bad_json_are_reported():
     with pytest.raises(GeminiError, match="не уместился"):
-        asyncio.run(_client(lambda request: _reply("{", finish="length")).write("т " * 50, ["takeaways"], "medium"))
+        asyncio.run(_client(lambda request: _reply("{", finish="length")).write("т " * 50, "medium"))
     with pytest.raises(GeminiError, match="неверном формате"):
-        asyncio.run(_client(lambda request: _reply("не JSON")).write("т " * 50, ["takeaways"], "medium"))
+        asyncio.run(_client(lambda request: _reply("не JSON")).write("т " * 50, "medium"))
 
 
 @pytest.mark.parametrize(
@@ -283,17 +283,17 @@ def test_clients_of_one_key_share_the_limiter_and_it_is_used():
 
 
 def test_note_with_nulls_is_accepted_and_bad_reply_is_asked_again():
-    good = {"title": "Реклама", "main_idea": None, "takeaways": ["Вывод"], "context": None}
-    document = asyncio.run(_client(lambda request: _reply(json.dumps(good, ensure_ascii=False))).write("т " * 50, ["takeaways"], "medium"))
-    assert document.takeaways == ["Вывод"] and document.main_idea == ""
+    good = {"title": "Реклама", "main_idea": None, "sections": [{"heading": "Р", "icon": None, "elements": [{"type": "bullets", "items": ["Вывод", None]}]}]}
+    document = asyncio.run(_client(lambda request: _reply(json.dumps(good, ensure_ascii=False))).write("т " * 50, "medium"))
+    assert document.sections[0].elements[0].items == ["Вывод"] and document.main_idea == ""
 
-    replies = iter(["[1, 2]", json.dumps({"title": "Реклама"})])
+    replies = iter(["[1, 2]", json.dumps({"title": "Реклама", "sections": []})])
     requests = []
 
     def handler(request):
         requests.append(request)
         return _reply(next(replies))
 
-    document = asyncio.run(_client(handler).write("т " * 50, ["takeaways"], "medium"))
+    document = asyncio.run(_client(handler).write("т " * 50, "medium"))
     assert document.title == "Реклама" and len(requests) == 2
     assert "Ответ не подошёл" in _seen(requests)[1]["messages"][-1]["content"]

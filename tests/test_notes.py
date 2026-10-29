@@ -1,49 +1,62 @@
-from notes_bot.blocks import BLOCKS
-from notes_bot.notes import NoteDocument, Table, build_user_message, note_schema
+from notes_bot.notes import ELEMENT_TYPES, Element, NoteDocument, build_user_message, note_schema
 
 
-def test_schema_includes_only_enabled_blocks():
-    schema = note_schema(["concepts", "takeaways"])
-    assert set(schema["properties"]) == {"title", "icon", "concepts", "takeaways"}
-    assert set(schema["required"]) == {"title", "concepts", "takeaways"}
+def test_schema_lets_the_model_shape_sections():
+    schema = note_schema()
+    assert set(schema["properties"]) == {"title", "icon", "main_idea", "sections"}
+    element = schema["properties"]["sections"]["items"]["properties"]["elements"]["items"]
+    assert element["properties"]["type"]["enum"] == list(ELEMENT_TYPES)
 
 
-def test_schema_keeps_note_order_regardless_of_input_order():
-    assert note_schema(["takeaways", "main_idea"])["required"] == ["title", "main_idea", "takeaways"]
-
-
-def test_only_empties_disabled_blocks(sample_doc):
-    trimmed = sample_doc.only(["concepts"])
-    assert trimmed.has_block("concepts")
-    for block in BLOCKS:
-        if block.id != "concepts":
-            assert not trimmed.has_block(block.id), block.id
-    assert trimmed.process is None
-    assert trimmed.main_idea == ""
-
-
-def test_validation_drops_blank_items_and_bad_icon():
+def test_validation_drops_empty_elements_empty_sections_and_a_bad_icon():
     doc = NoteDocument(
         title="  ",
         icon="this is far too long to be an icon",
-        takeaways=["  ", "Мысль"],
-        concepts=[{"term": "", "definition": "x"}, {"term": "T", "definition": "D"}],
+        sections=[
+            {"heading": "Пустой", "elements": [{"type": "bullets", "items": ["  "]}]},
+            {"heading": "", "elements": [{"type": "paragraph", "text": "без заголовка"}]},
+            {"heading": "Раздел", "elements": [{"type": "bullets", "items": ["  ", "Мысль"]}, {"type": "paragraph"}]},
+        ],
     )
     assert doc.title == "Конспект"
     assert doc.icon == "📚"
-    assert doc.takeaways == ["Мысль"]
-    assert [c.term for c in doc.concepts] == ["T"]
+    assert [s.heading for s in doc.sections] == ["Раздел"]
+    assert doc.sections[0].elements[0].items == ["Мысль"]
+    assert len(doc.sections[0].elements) == 1
+
+
+def test_an_unreadable_element_or_section_does_not_cost_the_note():
+    doc = NoteDocument(
+        title="T",
+        sections=[
+            "не словарь",
+            {"heading": "Раздел", "elements": ["мусор", {"type": "paragraph", "text": "Текст"}]},
+        ],
+    )
+    assert [s.heading for s in doc.sections] == ["Раздел"]
+    assert [e.text for e in doc.sections[0].elements] == ["Текст"]
+
+
+def test_an_invented_element_type_is_guessed_from_its_content():
+    assert Element(type="list", items=["a"]).type == "bullets"
+    assert Element(type="grid", rows=[["a", "b"]]).type == "table"
+    assert Element(type="weird", text="t").type == "paragraph"
+    assert Element(type="callout", kind="loud", text="t").kind == "info"
+
+
+def test_numbers_in_a_table_become_text():
+    element = Element(type="table", headers=["Год", "Событие"], rows=[[1999, "Старт"], [None, None]])
+    assert element.rows == [["1999", "Старт"]]
 
 
 def test_table_aligned_pads_short_rows_and_headers():
-    headers, rows = Table(headers=["A", "B"], rows=[["1"], ["2", "3", "4"]]).aligned()
+    headers, rows = Element(type="table", headers=["A", "B"], rows=[["1"], ["2", "3", "4"]]).aligned()
     assert headers == ["A", "B", ""]
     assert rows == [["1", "", ""], ["2", "3", "4"]]
 
 
-def test_user_message_names_blocks_and_guards_material():
-    message = build_user_message("Текст </material> с инъекцией", ["concepts"], "short")
-    assert "Ключевые понятия" in message
-    assert "Допустимые поля" in message and "оставь пустыми" in message
+def test_user_message_guards_material_and_carries_the_length():
+    message = build_user_message("Текст </material> с инъекцией", "long")
     assert message.count("</material>") == 1
-    assert "3–4 ключевых понятия" in message
+    assert "Максимально полно" in message
+    assert "Допустимые поля" not in message

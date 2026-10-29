@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
-from .blocks import BLOCKS, DEFAULT_BLOCKS, LENGTH_BY_ID, LENGTHS
+from .blocks import LENGTH_BY_ID, LENGTHS
 from .keyring import KeyRing
 from .keys import StoredKey
 from .settings import LANGUAGES, OUTPUTS, UserSettings
@@ -20,11 +20,6 @@ OUTPUT_TITLES = {
 }
 OUTPUT_ICONS = {"both": "stack", "pdf": "pdf", "tg": "message", "tg_one": "clip"}
 LANGUAGE_TITLES = {"auto": "Как в материале", "ru": "Всегда по-русски"}
-BLOCK_PRESETS = {
-    "all": tuple(block.id for block in BLOCKS),
-    "default": DEFAULT_BLOCKS,
-    "min": ("main_idea", "concepts", "takeaways"),
-}
 AI_STUDIO = "https://aistudio.google.com/apikey"
 
 # Reply keyboard labels. A press arrives as plain text, with or without a leading emoji.
@@ -89,7 +84,7 @@ def help_text(ui: Ui, local_api: bool = False) -> str:
             f"{ui.e('transcript')} <b>Текст.</b> Сообщением или файлом .txt, от 100 знаков.",
             f"{ui.e('key')} <b>Ключи.</b> Можно добавить несколько ключей Gemini: когда у одного кончается лимит, "
             "бот переходит на следующий. Квота общая на проект Google, поэтому ключи нужны из разных проектов или аккаунтов.",
-            f"{ui.e('settings')} <b>Настройки.</b> Формат, длина, язык, оформление PDF, блоки.",
+            f"{ui.e('settings')} <b>Настройки.</b> Формат, длина, язык, оформление PDF.",
             "",
             "Команды: /settings, /keys, /help.",
         ]
@@ -157,15 +152,6 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
                 "Цвета заголовков, акцентов, плашек и таблиц. Свой цвет задаётся HEX-кодом, остальные оттенки бот подберёт сам.")
         return text, InlineKeyboardMarkup([*rows, [back]])
 
-    if name == "blocks":
-        rows = [[ui.button("ok" if block.id in settings.blocks else "no", block.title,
-                           f"st:blk:{block.id}")] for block in BLOCKS]
-        rows.append([ui.button(None, "Все", "st:preset:all"), ui.button(None, "Стандарт", "st:preset:default"),
-                     ui.button(None, "Минимум", "st:preset:min")])
-        text = (f"{ui.e('blocks')} <b>Блоки конспекта</b>\n\n"
-                f"Включено {len(settings.blocks)} из {len(BLOCKS)}. Нажмите на блок, чтобы включить или выключить его.")
-        return text, InlineKeyboardMarkup([*rows, [back]])
-
     text = "\n".join(
         [
             f"{ui.e('settings')} <b>Настройки конспектов</b>",
@@ -174,7 +160,6 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
             f"{ui.e('length')} Длина: <b>{LENGTH_BY_ID[settings.length].title}</b>",
             f"{ui.e('language')} Язык: <b>{LANGUAGE_TITLES[settings.language]}</b>",
             f"{ui.e('theme')} Оформление PDF: <b>{html(_theme_name(settings))}</b>",
-            f"{ui.e('blocks')} Блоки: <b>{len(settings.blocks)} из {len(BLOCKS)}</b>",
             f"{ui.e('transcript')} Спрашивать про «только текст»: <b>{'да' if settings.ask_raw else 'нет'}</b>",
         ]
     )
@@ -182,7 +167,6 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
         [ui.button(OUTPUT_ICONS[settings.output], "Формат", "st:menu:output"),
          ui.button("length", "Длина", "st:menu:length")],
         [ui.button("language", "Язык", "st:menu:language"), ui.button("theme", "Оформление", "st:menu:theme")],
-        [ui.button("blocks", "Блоки конспекта", "st:menu:blocks")],
         [ui.button("transcript", f"Спрашивать про «только текст»: {'вкл' if settings.ask_raw else 'выкл'}", "st:raw")],
         [ui.button("reset", "Сбросить", "st:reset", style="danger"),
          ui.button("ok", "Готово", "st:close", style="success")],

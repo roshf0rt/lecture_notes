@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import re
 import textwrap
-from collections.abc import Callable
 
-from .blocks import BLOCKS, BY_ID
-from .notes import NoteDocument
+from .notes import Element, NoteDocument
 from .ui import markdown_block_icon
 
 TG_LIMIT = 4096
@@ -56,9 +54,9 @@ def _quote(lines: list[str]) -> str:
     return "\n".join(f">{line}" for line in lines)
 
 
-def _heading(block_id: str, premium: bool = False) -> str:
-    block = BY_ID[block_id]
-    return f"*{markdown_block_icon(block_id, premium, escape(block.icon))} {escape(block.title)}*"
+def _icon(key: str | None, premium: bool, fallback: str) -> str:
+    """An icon for a MarkdownV2 message; the custom emoji of the bot owner when premium is on."""
+    return markdown_block_icon(key, premium, escape(fallback)) if key else escape(fallback)
 
 
 def _bullets(items: list[str], marker: str) -> list[str]:
@@ -73,74 +71,63 @@ def _numbered(items: list[str]) -> list[str]:
     return units
 
 
-def _main_idea(doc: NoteDocument) -> list[str]:
-    return [_quote([inline(piece)]) for piece in _pieces(doc.main_idea)]
-
-
-def _context(doc: NoteDocument) -> list[str]:
-    return [inline(piece) for paragraph in doc.context for piece in _pieces(paragraph)]
-
-
-def _concepts(doc: NoteDocument) -> list[str]:
-    units: list[str] = []
-    for concept in doc.concepts:
-        head, *rest = _pieces(concept.definition)
-        lines = [f"▸ *{escape(concept.term)}* — {inline(head)}"]
-        lines.extend(inline(piece) for piece in rest)
-        if concept.why.strip():
-            lines.append(f"_Зачем:_ {inline(concept.why)}")
-        units.append("\n".join(lines))
-    return units
-
-
-def _process(doc: NoteDocument) -> list[str]:
-    if doc.process is None:
-        return []
-    intro = [inline(piece) for piece in _pieces(doc.process.intro)]
-    return intro + _numbered(doc.process.steps)
-
-
-def _differences(doc: NoteDocument) -> list[str]:
-    if doc.differences is None:
-        return []
-    headers, rows = doc.differences.aligned()
+def _table(element: Element) -> list[str]:
+    headers, rows = element.aligned()
     units: list[str] = []
     for title, *values in rows:
         if not title.strip():
             continue
-        lines = [f"▸ *{escape(title)}*"]
-        for header, value in zip(headers[1:], values):
-            if value.strip():
-                label = f"_{escape(header)}:_ " if header.strip() else ""
-                lines.append(f"  • {label}{inline(value)}")
+        filled = [(header, value) for header, value in zip(headers[1:], values) if value.strip()]
+        if len(filled) == 1:
+            units.append(f"▸ *{inline_plain(title)}* — {inline(filled[0][1])}")
+            continue
+        lines = [f"▸ *{inline_plain(title)}*"]
+        for header, value in filled:
+            label = f"_{escape(header)}:_ " if header.strip() else ""
+            lines.append(f"  • {label}{inline(value)}")
         units.append("\n".join(lines))
     return units
 
 
-def _examples(doc: NoteDocument) -> list[str]:
-    units: list[str] = []
-    for example in doc.examples:
-        head = f"*{escape(example.title)}*\n" if example.title.strip() else ""
-        for index, piece in enumerate(_pieces(example.text)):
-            units.append((head if index == 0 else "") + inline(piece))
-    return units
+def inline_plain(text: str) -> str:
+    """Escape text for use inside *bold*: any ** markers in it are dropped."""
+    return escape(text.replace("**", ""))
 
 
-# Short list-like blocks are joined with single newlines; the rest get a blank line between items.
-_COMPACT = {"process", "warnings", "practice", "takeaways", "questions"}
-
-_RENDERERS: dict[str, Callable[[NoteDocument], list[str]]] = {
-    "main_idea": _main_idea,
-    "context": _context,
-    "concepts": _concepts,
-    "process": _process,
-    "differences": _differences,
-    "examples": _examples,
-    "warnings": lambda doc: [_quote([f"⚠️ {inline(piece)}"]) for item in doc.warnings for piece in _pieces(item)],
-    "practice": lambda doc: _bullets(doc.practice, "→"),
-    "takeaways": lambda doc: _bullets(doc.takeaways, "✦"),
-    "questions": lambda doc: _numbered(doc.questions),
+# kind -> (emoji, key of the owner's custom emoji)
+_CALLOUTS = {
+    "important": ("📌", None),
+    "warning": ("⚠️", "warnings"),
+    "tip": ("💡", "examples"),
+    "info": ("ℹ️", None),
+    "quote": ("", None),
 }
+
+
+def _element(element: Element, premium: bool) -> tuple[list[str], bool]:
+    """Units of one element, and whether they sit close together (a list) or spaced apart."""
+    kind = element.type
+    if kind == "paragraph":
+        return [inline(piece) for piece in _pieces(element.text)], False
+    if kind == "bullets":
+        return _bullets(element.items, "•"), True
+    if kind == "numbered":
+        return _numbered(element.items), True
+    if kind == "checklist":
+        return _bullets(element.items, "☐"), True
+    if kind == "table":
+        return _table(element), False
+    if kind == "callout":
+        emoji, key = _CALLOUTS[element.kind]
+        icon = f"{_icon(key, premium, emoji)} " if emoji else ""
+        return [_quote([icon + inline(piece)]) for piece in _pieces(element.text)], False
+    if kind == "toggle":
+        head = f"*{inline_plain(element.title)}*\n" if element.title else ""
+        pieces = _pieces(element.text)
+        return [(head if index == 0 else "") + inline(piece) for index, piece in enumerate(pieces)], False
+    if kind == "subheading":
+        return [f"*{inline_plain(element.text)}*"], False
+    return [], False
 
 
 def _pack(units: list[tuple[str, str]], limit: int) -> list[str]:
@@ -162,20 +149,29 @@ def _pack(units: list[tuple[str, str]], limit: int) -> list[str]:
 def render_messages(doc: NoteDocument, limit: int = TG_LIMIT, premium: bool = False) -> list[str]:
     """Render the note as MarkdownV2 messages, each within Telegram's length limit.
 
-    With premium on, block headings use custom emoji (the bot owner needs Telegram Premium).
+    With premium on, some icons are custom emoji (the bot owner needs Telegram Premium).
     """
     units: list[tuple[str, str]] = [("", f"{escape(doc.icon)} *{escape(doc.title)}*")]
-    for block in BLOCKS:
-        if not doc.has_block(block.id):
-            continue
-        items = _RENDERERS[block.id](doc)
-        if not items:
-            continue
-        heading = _heading(block.id, premium)
-        items[0] = f"{_quote([heading]) if block.id == 'main_idea' else heading}\n{items[0]}"
-        for index, item in enumerate(items):
-            compact = block.id in _COMPACT and index > 0
-            units.append(("\n" if compact else "\n\n", item))
+    if doc.main_idea:
+        heading = f"*{_icon('main_idea', premium, '🧠')} Главная идея*"
+        pieces = _pieces(doc.main_idea)
+        units.append(("\n\n", _quote([heading])))
+        units.extend(("\n", _quote([inline(piece)])) if index == 0 else ("\n\n", _quote([inline(piece)]))
+                     for index, piece in enumerate(pieces))
+    for number, section in enumerate(doc.sections, start=1):
+        icon = f"{escape(section.icon)} " if section.icon else ""
+        heading = f"*{icon}{number}\\. {inline_plain(section.heading)}*"
+        pending: str | None = heading
+        for element in section.elements:
+            items, compact = _element(element, premium)
+            for index, item in enumerate(items):
+                if pending is not None:
+                    units.append(("\n\n", f"{pending}\n{item}"))
+                    pending = None
+                    continue
+                units.append(("\n" if compact and index > 0 else "\n\n", item))
+        if pending is not None:
+            units.append(("\n\n", pending))
 
     messages = _pack(units, limit - _PART_RESERVE)
     if len(messages) == 1:
@@ -183,28 +179,18 @@ def render_messages(doc: NoteDocument, limit: int = TG_LIMIT, premium: bool = Fa
     return [f"_\\({index}/{len(messages)}\\)_\n{message}" for index, message in enumerate(messages, start=1)]
 
 
-# Blocks dropped first when the note does not fit into one message: the least essential come first.
-_DROP_ORDER = ("questions", "practice", "examples", "differences", "process", "context", "concepts", "warnings")
-
-
 def fit_one_message(doc: NoteDocument, premium: bool = False) -> list[str]:
-    """Render the note as a single message, dropping the least essential blocks until it fits."""
-    kept = [block.id for block in BLOCKS if doc.has_block(block.id)]
-    candidate = doc.only(kept)
+    """Render the note as a single message, dropping sections from the end until it fits."""
+    candidate = doc
     messages = render_messages(candidate, premium=premium)
-    for block_id in _DROP_ORDER:
-        if len(messages) == 1:
-            return messages
-        if block_id in kept:
-            kept.remove(block_id)
-            candidate = doc.only(kept)
-            messages = render_messages(candidate, premium=premium)
-    # Still too long: shorten the free text, which is what the model wrote most of.
-    shorter = candidate.model_copy(update={
-        "main_idea": candidate.main_idea[:400],
-        "takeaways": [item[:200] for item in candidate.takeaways],
-    })
-    return render_messages(shorter, premium=premium)[:1]
+    while len(messages) > 1 and candidate.sections:
+        candidate = candidate.model_copy(update={"sections": candidate.sections[:-1]})
+        messages = render_messages(candidate, premium=premium)
+    if len(messages) > 1:
+        # Only the main idea is left and it is still too long: cut it.
+        candidate = candidate.model_copy(update={"main_idea": candidate.main_idea[:400]})
+        messages = render_messages(candidate, premium=premium)
+    return messages[:1]
 
 
 def plain_text(markdown: str) -> str:

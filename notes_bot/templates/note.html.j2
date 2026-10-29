@@ -24,42 +24,45 @@
   <nav class="toc">
     <p class="toc-title">Содержание</p>
     <ol class="toc-list">
-      {% for s in sections %}<li><a href="#{{ s.id }}">{{ s.icon }} {{ s.title }}</a></li>{% endfor %}
+      {% for s in sections %}
+      <li><a href="#{{ s.id }}">{{ s.number }}. {{ s.title }}</a>
+        {% if s.subs %}<ol class="toc-sub">{% for sub in s.subs %}<li><a href="#{{ sub.id }}">{{ sub.title|safe }}</a></li>{% endfor %}</ol>{% endif %}
+      </li>
+      {% endfor %}
     </ol>
   </nav>
   {% endif %}
 
   {% for s in sections %}
   <section class="block tone-{{ s.tone }}" id="{{ s.id }}">
-    <h2>{{ s.icon }} {{ s.title }}</h2>
-    {% if s.kind == "paragraphs" %}
-      {% for item in s.items %}<p>{{ item|safe }}</p>{% endfor %}
-    {% elif s.kind == "table" %}
-      <table>
-        <thead><tr>{% for h in s.headers %}<th>{{ h|safe }}</th>{% endfor %}</tr></thead>
-        <tbody>
-          {% for row in s.rows %}<tr>{% for cell in row %}<td>{{ cell|safe }}</td>{% endfor %}</tr>{% endfor %}
-        </tbody>
-      </table>
-    {% elif s.kind == "steps" %}
-      {% if s.intro %}<p>{{ s.intro|safe }}</p>{% endif %}
-      <ol class="steps">{% for item in s.items %}<li>{{ item|safe }}</li>{% endfor %}</ol>
-    {% elif s.kind == "examples" %}
-      {% for ex in s.items %}
-      <div class="example">
-        {% if ex.title %}<p class="example-title">{{ ex.title|safe }}</p>{% endif %}
-        <p>{{ ex.text|safe }}</p>
-      </div>
-      {% endfor %}
-    {% elif s.kind == "callouts" %}
-      {% for item in s.items %}
-      <div class="callout tone-{{ s.tone }}"><p><span class="callout-icon">{{ s.icon }}</span>{{ item|safe }}</p></div>
-      {% endfor %}
-    {% elif s.kind == "bullets" %}
-      <ul class="bullets">{% for item in s.items %}<li>{{ item|safe }}</li>{% endfor %}</ul>
-    {% elif s.kind == "numbered" %}
-      <ol class="numbered">{% for item in s.items %}<li>{{ item|safe }}</li>{% endfor %}</ol>
-    {% endif %}
+    <h2>{{ s.number }}. {% if s.icon %}<span class="heading-icon">{{ s.icon }}</span> {% endif %}{{ s.title }}</h2>
+    {% for e in s.elements %}
+      {% if e.kind == "paragraph" %}
+        <p>{{ e.text|safe }}</p>
+      {% elif e.kind == "subheading" %}
+        <h3 id="{{ e.id }}">{{ e.text|safe }}</h3>
+      {% elif e.kind == "bullets" %}
+        <ul class="bullets">{% for item in e.points %}<li>{{ item|safe }}</li>{% endfor %}</ul>
+      {% elif e.kind == "numbered" %}
+        <ol class="numbered">{% for item in e.points %}<li>{{ item|safe }}</li>{% endfor %}</ol>
+      {% elif e.kind == "checklist" %}
+        <ul class="checklist">{% for item in e.points %}<li>{{ item|safe }}</li>{% endfor %}</ul>
+      {% elif e.kind == "table" %}
+        <table>
+          {% if e.headers %}<thead><tr>{% for h in e.headers %}<th>{{ h|safe }}</th>{% endfor %}</tr></thead>{% endif %}
+          <tbody>
+            {% for row in e.rows %}<tr>{% for cell in row %}<td>{{ cell|safe }}</td>{% endfor %}</tr>{% endfor %}
+          </tbody>
+        </table>
+      {% elif e.kind == "callout" %}
+        <div class="callout tone-{{ e.tone }} callout-{{ e.callout_kind }}"><p>{% if e.icon %}<span class="callout-icon">{{ e.icon }}</span>{% endif %}{{ e.text|safe }}</p></div>
+      {% elif e.kind == "toggle" %}
+        <div class="toggle">
+          {% if e.title %}<p class="toggle-title">▾ {{ e.title|safe }}</p>{% endif %}
+          <p>{{ e.text|safe }}</p>
+        </div>
+      {% endif %}
+    {% endfor %}
   </section>
   {% endfor %}
 </body>

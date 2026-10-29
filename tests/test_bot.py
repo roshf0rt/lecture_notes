@@ -62,11 +62,15 @@ class FakeModel:
             raise GeminiError("лимит", QUOTA)
         return LONG_TEXT
 
-    async def write(self, transcript, enabled, length, language="auto"):
+    async def write(self, transcript, length, language="auto"):
         self.log.append(("write", self.api_key, language))
         if self.fail_write is not None:
             raise self.fail_write
-        return NoteDocument(title="Лекция", takeaways=["Главный вывод " * 4], questions=["Вопрос?"])
+        return _note("Лекция")
+
+
+def _note(title="Лекция") -> NoteDocument:
+    return NoteDocument(title=title, main_idea="Главная идея лекции.", sections=[{"heading": "Тема", "elements": [{"type": "bullets", "items": ["Главный вывод " * 4]}]}])
 
 
 class FakeMessage:
@@ -216,12 +220,8 @@ def _data(markup):
 # --- settings ---------------------------------------------------------------------------
 
 
-def test_block_toggle_presets_and_reset(tmp_path):
+def test_language_choice_and_reset(tmp_path):
     h = Harness(tmp_path)
-    h.tap(1, "st:blk:examples", on_settings_button)
-    assert "examples" in h.services.store.get(1).blocks
-    h.tap(1, "st:preset:min", on_settings_button)
-    assert h.services.store.get(1).blocks == ("main_idea", "concepts", "takeaways")
     h.tap(1, "st:set:language:ru", on_settings_button)
     settings = h.services.store.get(1)
     assert settings.language == "ru"

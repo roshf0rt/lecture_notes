@@ -128,16 +128,15 @@ class GeminiClient:
             raise GeminiError("В записи не нашлось речи.")
         return text
 
-    async def write(self, transcript: str, enabled: Iterable[str], length_id: str, language: str = "auto") -> NoteDocument:
-        enabled = list(enabled)
+    async def write(self, transcript: str, length_id: str, language: str = "auto") -> NoteDocument:
         async with _friendly_errors():
             response = await self._client.aio.models.generate_content(
                 model=self._model,
-                contents=build_user_message(transcript, enabled, length_id, language),
+                contents=build_user_message(transcript, length_id, language),
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     response_mime_type="application/json",
-                    response_json_schema=note_schema(enabled),
+                    response_json_schema=note_schema(),
                     max_output_tokens=MAX_OUTPUT_TOKENS,
                 ),
             )

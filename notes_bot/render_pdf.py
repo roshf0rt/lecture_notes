@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from .blocks import BY_ID
-from .notes import NoteDocument
+from .notes import Element, NoteDocument
 from .themes import Theme, tint
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -16,17 +14,16 @@ TOC_MIN_SECTIONS = 3
 _INLINE = re.compile(r"\*\*(.+?)\*\*|`([^`]+)`")
 
 
-@dataclass
-class Section:
-    id: str
-    title: str
-    icon: str
-    tone: str
-    kind: str
-    items: list = field(default_factory=list)
-    headers: list[str] = field(default_factory=list)
-    rows: list[list[str]] = field(default_factory=list)
-    intro: str = ""
+# Headings take these colours in turn, so a long note is easy to scan.
+SECTION_TONES = ("blue", "purple", "green", "orange")
+# What a callout looks like: colour role and icon.
+CALLOUT_STYLE = {
+    "info": ("blue", "💬"),
+    "important": ("orange", "📌"),
+    "warning": ("yellow", "⚠️"),
+    "tip": ("green", "💡"),
+    "quote": ("gray", ""),
+}
 
 
 def _html(text: str) -> str:
@@ -37,51 +34,45 @@ def _html(text: str) -> str:
     )
 
 
-def _sections(doc: NoteDocument) -> list[Section]:
-    sections: list[Section] = []
+def _view(element: Element) -> dict:
+    """An element as the template wants it: text already escaped."""
+    view: dict = {"kind": element.type}
+    if element.type in ("paragraph", "subheading"):
+        view["text"] = _html(element.text)
+    elif element.type in ("bullets", "numbered", "checklist"):
+        view["points"] = [_html(item) for item in element.items]
+    elif element.type == "table":
+        headers, rows = element.aligned()
+        view["headers"] = [html.escape(header) for header in headers] if any(headers) else []
+        view["rows"] = [[_html(cell) for cell in row] for row in rows]
+    elif element.type == "callout":
+        tone, icon = CALLOUT_STYLE[element.kind]
+        view.update(text=_html(element.text), tone=tone, icon=icon, callout_kind=element.kind)
+    elif element.type == "toggle":
+        view.update(title=_html(element.title), text=_html(element.text))
+    return view
 
-    def add(block_id: str, kind: str, **data) -> None:
-        block = BY_ID[block_id]
-        sections.append(Section(block_id, block.title, block.icon, block.tone, kind, **data))
 
-    if doc.has_block("context"):
-        add("context", "paragraphs", items=[_html(p) for p in doc.context])
-    if doc.has_block("concepts"):
-        add(
-            "concepts",
-            "table",
-            headers=["Понятие", "Определение", "Зачем важно"],
-            rows=[[f"<strong>{html.escape(c.term)}</strong>", _html(c.definition), _html(c.why)] for c in doc.concepts],
-        )
-    if doc.has_block("process") and doc.process is not None:
-        add(
-            "process",
-            "steps",
-            intro=_html(doc.process.intro),
-            items=[_html(step) for step in doc.process.steps],
-        )
-    if doc.has_block("differences") and doc.differences is not None:
-        headers, rows = doc.differences.aligned()
-        add(
-            "differences",
-            "table",
-            headers=[html.escape(h) for h in headers],
-            rows=[[_html(cell) for cell in row] for row in rows],
-        )
-    if doc.has_block("examples"):
-        add(
-            "examples",
-            "examples",
-            items=[{"title": html.escape(e.title), "text": _html(e.text)} for e in doc.examples],
-        )
-    if doc.has_block("warnings"):
-        add("warnings", "callouts", items=[_html(w) for w in doc.warnings])
-    if doc.has_block("practice"):
-        add("practice", "bullets", items=[_html(p) for p in doc.practice])
-    if doc.has_block("takeaways"):
-        add("takeaways", "bullets", items=[_html(t) for t in doc.takeaways])
-    if doc.has_block("questions"):
-        add("questions", "numbered", items=[_html(q) for q in doc.questions])
+def _sections(doc: NoteDocument) -> list[dict]:
+    sections = []
+    for number, section in enumerate(doc.sections, start=1):
+        views = []
+        subs = []
+        for element in section.elements:
+            view = _view(element)
+            if element.type == "subheading":
+                view["id"] = f"s{number}-{len(subs) + 1}"
+                subs.append({"id": view["id"], "title": view["text"]})
+            views.append(view)
+        sections.append({
+            "id": f"s{number}",
+            "number": number,
+            "title": section.heading,
+            "icon": section.icon,
+            "tone": SECTION_TONES[(number - 1) % len(SECTION_TONES)],
+            "elements": views,
+            "subs": subs,
+        })
     return sections
 
 
@@ -93,9 +84,10 @@ def theme_css(theme: Theme) -> str:
 .tone-{role} h2 {{ color: {color}; }}
 .tone-{role} th {{ background: {tint(color, 0.86)}; color: {color}; }}
 .tone-{role}.callout {{ background: {tint(color, 0.9)}; border-left-color: {color}; }}
-.tone-{role} .example {{ border-left-color: {color}; }}
+.tone-{role} .toggle {{ border-left-color: {color}; background: {tint(color, 0.93)}; }}
 .tone-{role} .bullets > li::before {{ color: {color}; }}
-.tone-{role} .steps > li::before, .tone-{role} .numbered > li::before {{ color: {color}; }}"""
+.tone-{role} .numbered > li::before {{ color: {color}; }}
+.tone-{role} .checklist > li::before {{ border-color: {color}; }}"""
         )
     return "\n".join(rules)
 
@@ -107,8 +99,8 @@ def build_html(doc: NoteDocument, theme: Theme) -> str:
     return template.render(
         title=doc.title,
         icon=doc.icon,
-        main_title=BY_ID["main_idea"].title,
-        main_icon=BY_ID["main_idea"].icon,
+        main_title="Главная идея лекции",
+        main_icon="🧠",
         main_idea=_html(doc.main_idea),
         sections=sections,
         show_toc=len(sections) >= TOC_MIN_SECTIONS,

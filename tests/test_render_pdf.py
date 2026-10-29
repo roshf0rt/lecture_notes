@@ -3,35 +3,40 @@ import subprocess
 
 import pytest
 
-from notes_bot.blocks import BLOCKS
 from notes_bot.notes import NoteDocument
 from notes_bot.render_pdf import build_html, render_pdf
 from notes_bot.themes import THEMES, custom_theme
 
 
-def test_html_contains_only_enabled_sections(sample_doc):
-    html = build_html(sample_doc.only(["concepts", "takeaways"]), THEMES["notion"])
-    assert 'id="concepts"' in html
-    assert 'id="takeaways"' in html
-    assert 'id="process"' not in html
-    assert 'id="warnings"' not in html
-    assert "Главная идея" not in html
+def test_html_has_numbered_sections_with_anchors_and_every_element_kind(sample_doc):
+    html = build_html(sample_doc, THEMES["notion"])
+    for number, heading in enumerate(["Определения", "Порядок проверки рекламы", "Контрреклама и антиреклама", "Что запомнить"], start=1):
+        assert f'id="s{number}"' in html and f"{number}. {heading}" in html
+    for marker in ['class="numbered"', 'class="checklist"', 'class="toggle"', "callout-warning", "<table>", "<h3"]:
+        assert marker in html, marker
+    assert "Главная идея лекции" in html
 
 
 def test_html_escapes_user_text_and_renders_bold():
-    doc = NoteDocument(title="<script>x</script>", context=["**важно** & <b>"])
+    doc = NoteDocument(title="<script>x</script>", sections=[
+        {"heading": "<b>H</b>", "elements": [{"type": "paragraph", "text": "**важно** & <b>"}]},
+    ])
     html = build_html(doc, THEMES["notion"])
-    assert "&lt;script&gt;" in html
+    assert "&lt;script&gt;" in html and "&lt;b&gt;H&lt;/b&gt;" in html
     assert "<strong>важно</strong> &amp; &lt;b&gt;" in html
 
 
-def test_table_of_contents_appears_only_for_six_or_more_sections(sample_doc):
-    few = build_html(sample_doc.only(["context", "concepts"]), THEMES["notion"])
+def test_table_of_contents_appears_only_from_three_sections(sample_doc):
+    few = build_html(sample_doc.model_copy(update={"sections": sample_doc.sections[:2]}), THEMES["notion"])
     assert 'class="toc"' not in few
-    many = build_html(
-        sample_doc.only([b.id for b in BLOCKS if b.id != "main_idea"]), THEMES["notion"]
-    )
-    assert 'class="toc"' in many
+    many = build_html(sample_doc, THEMES["notion"])
+    assert 'class="toc"' in many and 'href="#s4"' in many
+    assert 'href="#s2-1"' in many  # a subheading is listed under its section
+
+
+def test_a_note_without_sections_is_still_a_document():
+    html = build_html(NoteDocument(title="Пусто", main_idea="Идея."), THEMES["notion"])
+    assert "Идея." in html and 'class="toc"' not in html
 
 
 def test_theme_colours_reach_the_css(sample_doc):

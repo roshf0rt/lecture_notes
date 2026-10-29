@@ -164,5 +164,5 @@ class RotatingModel:
             raise GeminiError(NO_SPEECH_KEY)
         return await self._call(action, keys)
 
-    async def write(self, transcript: str, enabled: tuple[str, ...], length_id: str, language: str = "auto") -> NoteDocument:
-        return await self._call(lambda client: client.write(transcript, enabled, length_id, language))
+    async def write(self, transcript: str, length_id: str, language: str = "auto") -> NoteDocument:
+        return await self._call(lambda client: client.write(transcript, length_id, language))

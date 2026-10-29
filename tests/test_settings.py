@@ -1,33 +1,22 @@
-from notes_bot.blocks import BLOCKS, DEFAULT_BLOCKS
+from notes_bot.blocks import DEFAULT_LENGTH
 from notes_bot.settings import SettingsStore, UserSettings
 
 
 def test_defaults_match_the_documented_choices():
     settings = UserSettings()
     assert settings.output == "both"
-    assert settings.length == "medium"
+    assert settings.length == DEFAULT_LENGTH == "long"
     assert settings.theme == "notion"
-    assert settings.blocks == DEFAULT_BLOCKS
-
-
-def test_toggle_block_switches_off_and_back_on_in_note_order():
-    settings = UserSettings().toggle_block("examples")
-    assert "examples" in settings.blocks
-    assert settings.blocks == tuple(b.id for b in BLOCKS if b.id in settings.blocks)
-
-    restored = settings.toggle_block("examples").toggle_block("concepts").toggle_block("concepts")
-    assert restored.blocks == tuple(b.id for b in BLOCKS if b.id in restored.blocks)
-    assert "examples" not in restored.blocks
 
 
 def test_invalid_stored_values_fall_back_to_defaults():
     settings = UserSettings.from_dict(
-        {"output": "docx", "length": "huge", "theme": "neon", "blocks": ["takeaways", "bogus"]}
+        {"output": "docx", "length": "huge", "theme": "neon", "blocks": ["takeaways"]}  # old data may still hold blocks
     )
     assert settings.output == "both"
-    assert settings.length == "medium"
+    assert settings.length == DEFAULT_LENGTH
     assert settings.theme == "notion"
-    assert settings.blocks == ("takeaways",)
+    assert not hasattr(settings, "blocks")
 
 
 def test_custom_theme_without_valid_colour_falls_back():
@@ -45,7 +34,7 @@ def test_store_roundtrip_and_default_for_new_user(tmp_path):
     store = SettingsStore(tmp_path / "nested" / "settings.sqlite3")
     assert store.get(42) == UserSettings()
 
-    saved = UserSettings(output="tg", length="long", theme="custom", custom_color="#1565a8", blocks=("context",))
+    saved = UserSettings(output="tg", length="long", theme="custom", custom_color="#1565a8")
     store.save(42, saved)
     store.close()
 

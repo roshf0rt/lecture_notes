@@ -5,7 +5,7 @@ import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .blocks import BLOCKS, DEFAULT_BLOCKS, DEFAULT_LENGTH, LENGTHS
+from .blocks import DEFAULT_LENGTH, LENGTHS
 from .themes import CUSTOM, DEFAULT_THEME, THEMES, parse_hex
 
 OUTPUTS = ("pdf", "tg", "both", "tg_one")
@@ -19,14 +19,9 @@ class UserSettings:
     length: str = DEFAULT_LENGTH
     theme: str = DEFAULT_THEME
     custom_color: str | None = None
-    blocks: tuple[str, ...] = DEFAULT_BLOCKS
     language: str = "auto"
     send_transcript: bool = False
     ask_raw: bool = False  # ask before each job whether to make a note or send only the transcript
-
-    def toggle_block(self, block_id: str) -> UserSettings:
-        enabled = set(self.blocks) ^ {block_id}
-        return replace(self, blocks=tuple(block.id for block in BLOCKS if block.id in enabled))
 
     def to_dict(self) -> dict:
         return {
@@ -34,7 +29,6 @@ class UserSettings:
             "length": self.length,
             "theme": self.theme,
             "custom_color": self.custom_color,
-            "blocks": list(self.blocks),
             "language": self.language,
             "send_transcript": self.send_transcript,
             "ask_raw": self.ask_raw,
@@ -49,12 +43,6 @@ class UserSettings:
         if theme != CUSTOM and theme not in THEMES:
             theme = DEFAULT_THEME
 
-        stored = raw.get("blocks")
-        blocks = (
-            tuple(block.id for block in BLOCKS if block.id in stored)
-            if isinstance(stored, list)
-            else DEFAULT_BLOCKS
-        )
         output = raw.get("output")
         length = raw.get("length")
         language = raw.get("language")
@@ -63,7 +51,6 @@ class UserSettings:
             length=length if length in {item.id for item in LENGTHS} else DEFAULT_LENGTH,
             theme=theme,
             custom_color=custom_color,
-            blocks=blocks,
             language=language if language in LANGUAGES else "auto",
             send_transcript=raw.get("send_transcript") is True,
             ask_raw=raw.get("ask_raw") is True,
