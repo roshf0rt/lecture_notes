@@ -52,11 +52,16 @@ def main_keyboard(ui: Ui, is_admin: bool) -> ReplyKeyboardMarkup:
                                input_field_placeholder="Пришлите запись или текст лекции")
 
 
-def welcome(ui: Ui, has_key: bool, shared: bool) -> str:
+def size_limit(local_api: bool) -> str:
+    """How big a file the bot can take, as the user reads it."""
+    return "до 2 ГБ" if local_api else "до 20 МБ"
+
+
+def welcome(ui: Ui, has_key: bool, shared: bool, local_api: bool = False) -> str:
     lines = [
         f"{ui.e('hello')} <b>Привет! Я делаю конспекты лекций.</b>",
         "",
-        f"{ui.e('mic')} Пришлите голосовое, аудио или видео (до 20 МБ, любой частый формат: ogg, mp3, aac, m4a, wav, mp4…)",
+        f"{ui.e('mic')} Пришлите голосовое, аудио или видео ({size_limit(local_api)}, любой частый формат: ogg, mp3, aac, m4a, wav, mp4…)",
         f"{ui.e('transcript')} или текст расшифровки сообщением либо файлом .txt.",
         "",
         f"{ui.e('settings')} В настройках выбираются формат (PDF или сообщения), длина, язык, цвета и блоки конспекта.",
@@ -69,12 +74,12 @@ def welcome(ui: Ui, has_key: bool, shared: bool) -> str:
     return "\n".join(lines)
 
 
-def help_text(ui: Ui) -> str:
+def help_text(ui: Ui, local_api: bool = False) -> str:
     return "\n".join(
         [
             f"{ui.e('help')} <b>Как пользоваться</b>",
             "",
-            f"{ui.e('mic')} <b>Запись.</b> Голосовое, аудио, видео или файл до 20 МБ. Формат определяется по содержимому, "
+            f"{ui.e('mic')} <b>Запись.</b> Голосовое, аудио, видео или файл {size_limit(local_api)}. Формат определяется по содержимому, "
             "поэтому подойдут и файлы без расширения. Видео и редкие форматы бот сам переводит в аудио.",
             f"{ui.e('transcript')} <b>Текст.</b> Сообщением или файлом .txt, от 100 знаков.",
             f"{ui.e('key')} <b>Ключи.</b> Можно добавить несколько ключей Gemini: когда у одного кончается лимит, "

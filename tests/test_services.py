@@ -189,3 +189,12 @@ def test_application_talks_to_the_local_server_when_configured(tmp_path):
     assert bot.local_mode is True
     cloud = build_application(Config("123:abc", "m", tmp_path / "c", frozenset())).bot
     assert cloud.base_url == "https://api.telegram.org/bot123:abc" and cloud.local_mode is False
+
+
+def test_welcome_and_help_name_the_real_file_limit():
+    from notes_bot.menus import help_text, welcome
+
+    assert "до 20 МБ" in welcome(PLAIN, True, False)
+    assert "до 2 ГБ" in welcome(PLAIN, True, False, local_api=True)
+    assert "до 2 ГБ" in help_text(PLAIN, local_api=True)
+    assert "20 МБ" not in welcome(PLAIN, True, False, local_api=True)

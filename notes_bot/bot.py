@@ -123,7 +123,7 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     ui = s.ui()
     await reply(
         update.effective_message,
-        welcome(ui, s.keys.count(user_id) > 0, s.options().shared_keys),
+        welcome(ui, s.keys.count(user_id) > 0, s.options().shared_keys, s.config.local_mode),
         main_keyboard(ui, s.is_admin(user_id)),
     )
     if s.is_admin(user_id):
@@ -134,7 +134,7 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     s = services(context)
     ui = s.ui()
-    await reply(update.effective_message, help_text(ui), main_keyboard(ui, s.is_admin(update.effective_user.id)))
+    await reply(update.effective_message, help_text(ui, s.config.local_mode), main_keyboard(ui, s.is_admin(update.effective_user.id)))
 
 
 async def on_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
