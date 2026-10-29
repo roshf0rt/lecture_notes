@@ -73,7 +73,7 @@ class NotesPipeline:
     ) -> Result:
         """Make one note. Several sources are read in order and treated as parts of one lecture."""
         text = await self.read(sources, text=text, audio=audio, audio_name=audio_name, audio_mime=audio_mime,
-                               progress=progress, on_transcript=on_transcript)
+                               progress=progress, on_transcript=on_transcript, language=settings.language)
         if len(text.strip()) < MIN_TEXT_CHARS:
             raise GeminiError("В материале слишком мало текста для конспекта.")
         if len(text) > MAX_TEXT_CHARS:
@@ -105,6 +105,7 @@ class NotesPipeline:
         audio_name: str | None = None,
         audio_mime: str | None = None,
         on_transcript: Callable[[str], Awaitable[None]] | None = None,
+        language: str = "auto",
     ) -> str:
         """The text of all sources in order: recordings are transcribed, texts are taken as they are."""
         if sources is None:
@@ -131,6 +132,8 @@ class NotesPipeline:
         reason = junk_reason(text) if recordings else None
         if reason:
             raise GeminiError(f"Расшифровка не получилась: {reason}. Попробуйте ещё раз или добавьте ключ Google.")
+        if language == "ru" and mostly_latin(text):
+            raise GeminiError("Расшифровка вышла на английском, хотя в настройках выбран русский. Попробуйте ещё раз.")
         if spoken and on_transcript is not None:  # handed over before the note is written, so a failure later loses nothing
             await on_transcript(_join(spoken) if len(spoken) > 1 else spoken[0])
         return text
@@ -141,6 +144,11 @@ class NotesPipeline:
         except AudioError as error:
             raise GeminiError(str(error)) from error
         return await self._model.transcribe(audio, name)
+
+
+def mostly_latin(text: str) -> bool:
+    letters = [char for char in text if char.isalpha()]
+    return len(letters) > 200 and sum(char.isascii() for char in letters) / len(letters) > 0.6
 
 
 def _join(texts: list[str]) -> str:

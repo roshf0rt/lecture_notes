@@ -176,3 +176,32 @@ def test_a_loop_at_the_start_then_normal_text_is_still_not_a_transcript():
         "Участник запоминает не баннер, а собственное впечатление от происходящего. " * 6
     )
     assert junk_reason(lecture)
+
+
+def test_a_russian_recording_translated_to_english_is_refused_when_russian_is_set():
+    from notes_bot.pipeline import mostly_latin
+
+    english = (
+        "Today we talk about event marketing and how people remember brands after a meeting. "
+        "Advertising tries to change a decision, while information only reports a fact. "
+        "Participants remember their own impression of the place, not the banner on the wall. "
+        "Next we look at a festival where organisers counted repeat visits instead of guests. "
+    )
+    assert mostly_latin(english) and not mostly_latin("Сегодня говорим о событийном маркетинге. " * 5)
+
+    class TranslatingModel:
+        async def transcribe(self, audio, filename):
+            return english
+
+        async def write(self, *args, **kwargs):
+            raise AssertionError("a note must not be written from a translation")
+
+    async def progress(stage, detail=""):
+        return None
+
+    source = Source(audio=b"OggS" + b"\x00" * 60, name="v.ogg")
+    with pytest.raises(GeminiError, match="вышла на английском"):
+        asyncio.run(NotesPipeline(TranslatingModel()).run(UserSettings(language="ru"), progress=progress, sources=[source]))
+    # With auto the same text is accepted: an English lecture is a legitimate choice there.
+    note = asyncio.run(NotesPipeline(TranslatingModel()).read([source], progress=progress, language="auto"))
+    assert note == english

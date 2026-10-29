@@ -606,7 +606,9 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
     async with s.slots:
         try:
             if raw:
-                await NotesPipeline(model).read(sources=sources, progress=progress, on_transcript=keep_transcript)
+                await NotesPipeline(model).read(
+                    sources=sources, progress=progress, on_transcript=keep_transcript, language=settings.language,
+                )
                 s.state.log_job(user_id, kind, True, time.monotonic() - started)
                 await _status(status, f"{ui.e('done')} Расшифровка готова")
                 return
