@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from notes_bot.audio import AudioError, canonical_extension, detect, find_pauses, is_media, plan_cuts, prepare, sniff, split_mp3
+from notes_bot.audio import AudioError, duration_seconds, canonical_extension, detect, find_pauses, is_media, plan_cuts, prepare, sniff, split_mp3, trim_silence
 
 LIMIT = 12 * 1024 * 1024
 
@@ -180,3 +180,26 @@ def test_split_at_the_planned_moments_gives_one_piece_per_part():
     ).stdout
     assert len(asyncio.run(split_mp3(wav, ".wav", [2.0, 4.0]))) == 3
     assert len(asyncio.run(split_mp3(wav, ".wav", []))) == 1
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_long_silences_are_cut_out_and_short_ones_stay():
+    mp3 = subprocess.run(
+        ["ffmpeg", "-loglevel", "error",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=16000",
+         "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono:d=4",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=16000",
+         "-filter_complex", "[0][1][2]concat=n=3:v=0:a=1", "-c:a", "libmp3lame", "-b:a", "32k", "-f", "mp3", "pipe:1"],
+        check=True, capture_output=True,
+    ).stdout
+    trimmed = asyncio.run(trim_silence(mp3))
+    before = asyncio.run(duration_seconds(mp3, ".mp3"))
+    after = asyncio.run(duration_seconds(trimmed, ".mp3"))
+    assert before > 7.5 and before - after >= 2.0  # most of the four seconds of silence is gone
+    assert after >= 4.0  # both seconds of tone on each side are still there
+    assert len(trimmed) < len(mp3)
+
+
+def test_trimming_never_loses_the_recording_when_ffmpeg_fails():
+    garbage = b"this is not audio" * 20
+    assert asyncio.run(trim_silence(garbage)) == garbage

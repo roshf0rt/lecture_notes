@@ -194,6 +194,23 @@ PAUSE_MIN_SECONDS = 0.4
 MIN_PIECE_SECONDS = 20.0
 
 
+SILENCE_FILTER = "silenceremove=stop_periods=-1:stop_duration=1.0:stop_threshold=-40dB:stop_silence=0.3"
+
+
+async def trim_silence(data: bytes, extension: str = ".mp3") -> bytes:
+    """The same recording without its long silences (over a second; a short natural pause stays).
+
+    The service charges for every second of audio, and a lecture has plenty of silence. If ffmpeg fails,
+    the recording is returned as it was.
+    """
+    try:
+        trimmed = await _ffmpeg(data, None, extension, ["-af", SILENCE_FILTER, "-c:a", "libmp3lame", "-b:a", "32k"],
+                                "trimmed.mp3")
+    except AudioError:
+        return data
+    return trimmed if len(trimmed) < len(data) else data
+
+
 async def find_pauses(data: bytes, extension: str) -> list[float]:
     """Moments of silence in the recording (the middle of each pause), in seconds. Empty when ffmpeg cannot tell."""
     with tempfile.TemporaryDirectory(prefix="notes-bot-") as folder:

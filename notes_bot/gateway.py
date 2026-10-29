@@ -27,6 +27,7 @@ from .audio import (
     plan_cuts,
     split_mp3,
     to_mp3,
+    trim_silence,
 )
 from .gemini import AUTH, MODEL, OTHER, OVERLOADED, QUOTA, TRANSCRIBE_PROMPT, UNREACHABLE, GeminiError
 from .transcript import junk_reason
@@ -36,7 +37,7 @@ log = logging.getLogger(__name__)
 
 GATEWAY_URL = "https://api.aikeysforyou.com/v1"
 MAX_OUTPUT_TOKENS = 16_000
-PIECE_ATTEMPTS = 3
+PIECE_ATTEMPTS = 2  # every try pays for the audio again
 PIECE_RETRY_DELAY = 2.0
 PIECE_GAP = 3.0  # pause between the pieces of one recording
 # Recordings longer than MAX_PIECE_SECONDS are cut into the fewest equal pieces, at pauses in the speech.
@@ -230,6 +231,8 @@ class GatewayClient:
         same piece may succeed on the next try.
         """
         reason = None
+        if ffmpeg_available():
+            data = await trim_silence(data)  # fewer seconds of audio, fewer tokens
         for attempt in range(1, PIECE_ATTEMPTS + 1):
             text = await self._transcribe_piece(data)
             reason = junk_reason(text)
