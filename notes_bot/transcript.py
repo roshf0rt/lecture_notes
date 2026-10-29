@@ -3,6 +3,7 @@ for a file or with filler, and a note built from that would be nonsense."""
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 # Phrases a model uses when it has no audio to work with.
 _NO_AUDIO = (
@@ -27,6 +28,10 @@ _ASK = re.compile(
 )
 MIN_LINES_FOR_REPETITION = 6
 MAX_REPEATED_SHARE = 0.5
+# Words and word pairs ("за- не") looping on one line, as a model does when it degenerates.
+MIN_WORDS_FOR_LOOP = 40
+MAX_UNIQUE_WORD_SHARE = 0.2
+MAX_TOP_BIGRAM_SHARE = 0.3
 
 
 def junk_reason(text: str) -> str | None:
@@ -38,6 +43,13 @@ def junk_reason(text: str) -> str | None:
     lines = [line.strip().lower() for line in text.splitlines() if line.strip()]
     if len(lines) >= MIN_LINES_FOR_REPETITION and len(set(lines)) / len(lines) < MAX_REPEATED_SHARE:
         return "расшифровка состоит из повторяющихся строк"
+    words = re.findall(r"\w+", lowered)
+    if len(words) >= MIN_WORDS_FOR_LOOP:
+        if len(set(words)) / len(words) < MAX_UNIQUE_WORD_SHARE:
+            return "расшифровка состоит из повторяющихся слов"
+        pairs = Counter(zip(words, words[1:]))
+        if pairs.most_common(1)[0][1] / (len(words) - 1) > MAX_TOP_BIGRAM_SHARE:
+            return "расшифровка состоит из повторяющихся слов"
     return None
 
 

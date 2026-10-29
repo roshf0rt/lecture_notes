@@ -34,7 +34,10 @@ def test_endless_repetition_is_not_a_transcript():
 def test_a_real_transcript_passes_even_if_it_mentions_files():
     lecture = (
         "Сегодня разберём, как устроена реклама и чем она отличается от информации. "
-        "Если вы пришлёте файл с заданием, мы проверим его на практике. " * 8
+        "Если вы пришлёте файл с заданием, мы проверим его на практике. "
+        "Событийный маркетинг строится на живом опыте участников и встрече с брендом. "
+        "Информация сообщает факт, а реклама пытается изменить решение человека. "
+        "Запоминается не баннер, а собственное впечатление от происходящего. "
     )
     assert junk_reason(lecture) is None
     assert junk_reason("Первая мысль. Вторая мысль.\nТретья мысль.\nЧетвёртая мысль.") is None
@@ -156,3 +159,10 @@ def test_requests_for_a_file_in_other_wordings_are_junk_and_stripped():
     real = "21 на 8. Так? И еще один способ, то есть мы могли, например, 3/8 домножить на два. " * 3
     assert junk_reason(real) is None
     assert strip_requests(f"{ask1}\n\n{real}\n\n{ask2}") == real.strip()
+
+
+def test_a_loop_on_one_line_is_not_a_transcript():
+    loop = "за- не " * 200
+    assert junk_reason(loop.strip())
+    real = "Событийный маркетинг строится на опыте участников, и мероприятие становится каналом для бренда. " * 4
+    assert junk_reason(real) is None
