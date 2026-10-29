@@ -420,6 +420,26 @@ def _head(path: Path) -> bytes:
         return handle.read(64)
 
 
+SEMESTER = "/semester"
+
+
+def _asks_topics(text: str | None) -> bool:
+    """/semester at the start of a text or a file's caption: one note per topic, however long the material is."""
+    return (text or "").strip().lower().startswith(SEMESTER)
+
+
+async def on_semester(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/semester and then the text: a note per topic of the whole text."""
+    message = update.effective_message
+    text = (message.text or "").partition(" ")[2].strip()
+    if not text:
+        await reply(message, f"Напишите <code>{SEMESTER}</code> и текст лекций, или приложите файл с этой подписью.")
+        return
+    if not await _agreed(update, context):
+        return
+    await _run_job(update, context, [Source(text=text, split=True)])
+
+
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     s = services(context)
     ui = s.ui()
@@ -442,6 +462,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     is_pdf = _is_pdf(name, mime)
+    split = _asks_topics(message.caption)
     is_text = (name or "").lower().endswith(TEXT_EXTENSIONS) or (mime or "").startswith("text/plain")
     # While a download runs, nobody flushes the batch: the file may belong to it.
     data = context.user_data
@@ -469,12 +490,12 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except NoTextError:
             await reply(message, f"{ui.e('warning')} В PDF нет текста, похоже, это скан. Пришлите текст или запись.")
         else:
-            data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=text), name or "PDF"))
+            data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=text, split=split), name or "PDF"))
     elif is_text:
-        data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=_decode(body)), name or "Текст"))
+        data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=_decode(body), split=split), name or "Текст"))
     elif not message.document or is_media(name, mime) or sniff(body if body is not None else _head(path)):
         # A document without a telling name or type may still be a recording: the header decides.
-        source = Source(audio=body, name=name, mime=mime, path=path)
+        source = Source(audio=body, name=name, mime=mime, path=path, split=split)
         data.setdefault("batch", []).append(Incoming(message.message_id, source, _describe(message, name)))
     else:
         await reply(message, f"{ui.e('warning')} Не понимаю этот файл. Пришлите аудио, видео или текст в формате .txt.")
@@ -646,7 +667,7 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
                 s.state.log_job(user_id, kind, True, time.monotonic() - started)
                 await _status(status, f"{ui.e('done')} Расшифровка готова")
                 return
-            result = await NotesPipeline(model).run(
+            results = await NotesPipeline(model).run_parts(
                 settings, progress=progress, sources=sources, premium=options.premium_emoji,
                 on_transcript=keep_transcript,
             )
@@ -664,9 +685,12 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
     notes = []
     if source == SHARED:
         notes.append("на общем ключе")
+    if len(results) > 1:
+        notes.append(f"{len(results)} конспектов по темам")
     await _status(status, f"{ui.e('done')} Конспект готов" + (f" ({', '.join(notes)})" if notes else ""))
-    await _send(message, result)
-    await _offer_topics(message, bot, s, user_id, result)
+    for result in results:
+        await _send(message, result)
+        await _offer_topics(message, bot, s, user_id, result)
 
 
 async def _status(status: Message, text: str) -> None:
@@ -940,6 +964,7 @@ def build_application(config: Config) -> Application:
     application.add_handler(CommandHandler("bind", on_bind))
     application.add_handler(CommandHandler("unbind", on_unbind))
     application.add_handler(CommandHandler("topics", on_topics))
+    application.add_handler(CommandHandler("semester", on_semester, filters=filters.ChatType.PRIVATE))
     application.add_handler(CallbackQueryHandler(admin.on_admin_button, pattern=r"^ad:"))
     application.add_handler(
         MessageHandler(

@@ -15,6 +15,7 @@ from .render_pdf import render_pdf
 from .transcript import junk_reason
 from .render_tg import fit_one_message, render_messages
 from .settings import UserSettings
+from .outline import OUTLINE_PROMPT, SPLIT_CHARS, Part, blocks_of, marked, plan
 from .themes import get_theme
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,8 @@ class Source:
     mime: str | None = None
     # A recording already on disk (local Bot API server), used instead of audio.
     path: Path | None = None
+    # The user asked for one note per topic (/semester), whatever the length.
+    split: bool = False
 
     @property
     def is_audio(self) -> bool:
@@ -46,6 +49,8 @@ class Model(Protocol):
     async def transcribe(self, audio: bytes, filename: str) -> str: ...
 
     async def write(self, transcript: str, length_id: str, language: str = "auto", extras: tuple[str, ...] = ()) -> NoteDocument: ...
+
+    async def outline(self, marked_text: str) -> list[dict]: ...
 
 
 @dataclass(frozen=True)
@@ -74,13 +79,52 @@ class NotesPipeline:
         on_transcript: Callable[[str], Awaitable[None]] | None = None,
     ) -> Result:
         """Make one note. Several sources are read in order and treated as parts of one lecture."""
+        return (await self.run_parts(settings, progress=progress, text=text, audio=audio, audio_name=audio_name,
+                                     audio_mime=audio_mime, sources=sources, premium=premium,
+                                     on_transcript=on_transcript))[0]
+
+    async def run_parts(
+        self,
+        settings: UserSettings,
+        *,
+        progress: Progress,
+        text: str | None = None,
+        audio: bytes | None = None,
+        audio_name: str | None = None,
+        audio_mime: str | None = None,
+        sources: list[Source] | None = None,
+        premium: bool = False,
+        on_transcript: Callable[[str], Awaitable[None]] | None = None,
+    ) -> list[Result]:
+        """One note, or one per topic when the material is too long for a single note."""
         text = await self.read(sources, text=text, audio=audio, audio_name=audio_name, audio_mime=audio_mime,
                                progress=progress, on_transcript=on_transcript, language=settings.language)
         if len(text.strip()) < MIN_TEXT_CHARS:
             raise GeminiError("В материале слишком мало текста для конспекта.")
         if len(text) > MAX_TEXT_CHARS:
             raise GeminiError("Материал слишком длинный. Разбейте его на несколько частей.")
+        wants_topics = any(source.split for source in sources or [])
+        if len(text) <= SPLIT_CHARS and not wants_topics:
+            return [await self._note(settings, text, progress, premium)]
 
+        await progress("outlining")
+        parts = await self._outline(text)
+        results = []
+        for number, part in enumerate(parts, start=1):
+            await progress("writing", f"{number} из {len(parts)}")
+            results.append(await self._note(settings, part.text, progress, premium))
+        return results
+
+    async def _outline(self, text: str) -> list[Part]:
+        blocks = blocks_of(text)
+        try:
+            raw = await self._model.outline(marked(blocks))
+        except GeminiError:
+            log.warning("No outline from the model; splitting the text into equal parts")
+            raw = []
+        return plan(raw, blocks)
+
+    async def _note(self, settings: UserSettings, text: str, progress: Progress, premium: bool) -> Result:
         await progress("writing")
         length = ONE_MESSAGE_LENGTH_ID if settings.output == "tg_one" else settings.length
         extras = () if settings.output == "tg_one" else settings.extras  # one message has no room for them

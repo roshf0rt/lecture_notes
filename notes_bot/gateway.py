@@ -32,6 +32,7 @@ from .audio import (
 from .gemini import AUTH, MODEL, OTHER, OVERLOADED, QUOTA, TRANSCRIBE_PROMPT, UNREACHABLE, GeminiError
 from .transcript import junk_reason, strip_requests
 from .notes import SYSTEM_PROMPT, NoteDocument, build_user_message, note_schema
+from .outline import OUTLINE_PROMPT
 
 log = logging.getLogger(__name__)
 
@@ -267,6 +268,18 @@ class GatewayClient:
         if truncated:
             raise GeminiError("Часть записи слишком длинная для одного ответа поставщика. Разрежьте запись на части поменьше.")
         return text.strip()
+
+    async def outline(self, marked_text: str) -> list[dict]:
+        messages = [
+            {"role": "system", "content": OUTLINE_PROMPT + "\n\nОтвет — только JSON-массив вида [{\"title\": \"…\", \"from\": 0}]."},
+            {"role": "user", "content": marked_text},
+        ]
+        text, _ = await self._post(messages, 4096)
+        try:
+            data = json.loads(_strip_fences(text))
+        except json.JSONDecodeError as error:
+            raise GeminiError("Не получилось разбить материал на темы.") from error
+        return data if isinstance(data, list) else []
 
     async def write(self, transcript: str, length_id: str, language: str = "auto", extras=()) -> NoteDocument:
         schema = json.dumps(note_schema(), ensure_ascii=False)

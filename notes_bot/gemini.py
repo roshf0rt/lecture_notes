@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from .audio import GEMINI_MIME, SUPPORTED_HINT, canonical_extension
 from .notes import SYSTEM_PROMPT, NoteDocument, build_user_message, note_schema
+from .outline import OUTLINE_PROMPT, OUTLINE_SCHEMA
 
 log = logging.getLogger(__name__)
 
@@ -127,6 +128,24 @@ class GeminiClient:
         if not text:
             raise GeminiError("В записи не нашлось речи.")
         return text
+
+    async def outline(self, marked_text: str) -> list[dict]:
+        async with _friendly_errors():
+            response = await self._client.aio.models.generate_content(
+                model=self._model,
+                contents=marked_text,
+                config=types.GenerateContentConfig(
+                    system_instruction=OUTLINE_PROMPT,
+                    response_mime_type="application/json",
+                    response_json_schema=OUTLINE_SCHEMA,
+                    temperature=0,
+                ),
+            )
+        try:
+            data = json.loads(response.text or "[]")
+        except json.JSONDecodeError as error:
+            raise GeminiError("Не получилось разбить материал на темы.") from error
+        return data if isinstance(data, list) else []
 
     async def write(self, transcript: str, length_id: str, language: str = "auto", extras: Iterable[str] = ()) -> NoteDocument:
         async with _friendly_errors():

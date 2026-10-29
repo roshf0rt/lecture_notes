@@ -63,6 +63,9 @@ class FakeModel:
             raise GeminiError("лимит", QUOTA)
         return LONG_TEXT
 
+    async def outline(self, marked_text):
+        return [{"title": "Первая", "from": 0}]
+
     async def write(self, transcript, length, language="auto", extras=()):
         self.log.append(("write", self.api_key, language))
         if self.fail_write is not None:
@@ -85,6 +88,7 @@ class FakeMessage:
         self.animation = None
         self.chat_id = 1
         self.message_id = message_id
+        self.caption = None
         self.replies: list[dict] = []
         self.edits: list[str] = []
 
