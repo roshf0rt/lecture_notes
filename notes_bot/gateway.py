@@ -51,12 +51,13 @@ def _classify_kind(response: httpx.Response) -> GeminiError:
         )
     if code == 402:
         return GeminiError("На балансе ключа у поставщика закончились деньги. Пополните его или добавьте другой ключ.", AUTH)
-    if code == 401 or (code == 403 and "model" not in body):
-        return GeminiError("Поставщик не принял ключ. Проверьте его в чате заказа.", AUTH)
-    if code in (403, 404) or "model" in body:
-        return GeminiError("Эта модель не входит в пакет вашего ключа. Сообщите владельцу бота.", MODEL)
+    # Server-side trouble first: its text may mention the model, but the model is not the problem.
     if code >= 500:
-        return GeminiError("Поставщик ключа сейчас перегружен. Попробуйте через минуту.", OVERLOADED)
+        return GeminiError("Поставщик ключа сейчас перегружен или модель временно недоступна. Попробуйте через минуту.", OVERLOADED)
+    if code == 401 or (code == 403 and "not_allowed" not in body and "not allowed" not in body):
+        return GeminiError("Поставщик не принял ключ. Проверьте его в чате заказа.", AUTH)
+    if code in (403, 404):
+        return GeminiError("Эта модель не входит в пакет вашего ключа. Сообщите владельцу бота.", MODEL)
     return GeminiError(f"Поставщик ключа вернул ошибку {code}. Попробуйте ещё раз.")
 
 

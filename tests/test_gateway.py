@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from notes_bot.gateway import GatewayClient
-from notes_bot.gemini import AUTH, MODEL, QUOTA, GeminiError
+from notes_bot.gemini import AUTH, MODEL, OVERLOADED, QUOTA, GeminiError
 from notes_bot.keys import KEY_PATTERN, is_gateway_key
 from notes_bot.services import GATEWAY_ADDED, GATEWAY_WARNING, key_report
 from notes_bot.ui import Ui
@@ -75,6 +75,8 @@ def test_truncated_note_and_bad_json_are_reported():
         (429, {"retry-after": "30"}, {"error": "slow down"}, QUOTA),
         (403, {}, {"error": "model_not_allowed"}, MODEL),
         (404, {}, {"error": "no such model"}, MODEL),
+        (503, {}, {"error": {"code": "model_temporarily_unavailable"}}, OVERLOADED),
+        (500, {}, {"error": "boom"}, OVERLOADED),
     ],
 )
 def test_gateway_errors_map_to_the_same_kinds_as_google(status, headers, body, kind):
