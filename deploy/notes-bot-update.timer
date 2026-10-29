@@ -1,0 +1,9 @@
+[Unit]
+Description=Check for notes-bot updates every ten minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

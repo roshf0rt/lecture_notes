@@ -1,0 +1,6 @@
+[Unit]
+Description=Update notes-bot from its git branch if it has changed
+
+[Service]
+Type=oneshot
+ExecStart=/opt/notes-bot/deploy/update.sh

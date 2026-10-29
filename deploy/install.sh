@@ -61,6 +61,12 @@ if [ -f "$API_ENV" ]; then
   fi
   systemctl enable --quiet --now notes-bot-cleanup.timer
 fi
+# Automatic updates: the bot checks its branch every ten minutes and restarts when it has moved.
+install -m 644 "$APP_DIR/deploy/notes-bot-update.service" /etc/systemd/system/notes-bot-update.service
+install -m 644 "$APP_DIR/deploy/notes-bot-update.timer" /etc/systemd/system/notes-bot-update.timer
+chmod +x "$APP_DIR/deploy/update.sh"
+systemctl daemon-reload
+systemctl enable --quiet --now notes-bot-update.timer
 systemctl daemon-reload
 systemctl enable --quiet notes-bot
 # restart, not start: on an update the old code is still running
