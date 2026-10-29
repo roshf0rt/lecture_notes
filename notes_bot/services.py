@@ -40,6 +40,8 @@ class Services:
     # Notes a user has waiting or running right now.
     queued: dict[int, int] = field(default_factory=dict)
     slots: asyncio.Semaphore | None = None
+    # Notes waiting for the user to pick a group topic, by token.
+    posts: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.slots is None:

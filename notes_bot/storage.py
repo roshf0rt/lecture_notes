@@ -90,6 +90,9 @@ class BotState:
                 CREATE TABLE IF NOT EXISTS options (name TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS whitelist (user_id INTEGER PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS topics (
+                    user_id INTEGER NOT NULL, subject TEXT NOT NULL, chat_id INTEGER NOT NULL, thread_id INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, subject));
                 CREATE TABLE IF NOT EXISTS agreements (user_id INTEGER PRIMARY KEY, version TEXT NOT NULL, accepted_at REAL NOT NULL);
                 """
             )
@@ -221,6 +224,25 @@ class BotState:
         )
 
     # --- jobs ----------------------------------------------------------------------------
+
+    def topics(self, user_id: int) -> list[tuple[str, int, int]]:
+        """(subject, chat id, topic id) for each subject the user has bound to a group topic."""
+        rows = self._connection.execute(
+            "SELECT subject, chat_id, thread_id FROM topics WHERE user_id = ? ORDER BY subject", (user_id,)
+        ).fetchall()
+        return [(subject, chat_id, thread_id) for subject, chat_id, thread_id in rows]
+
+    def bind_topic(self, user_id: int, subject: str, chat_id: int, thread_id: int) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO topics (user_id, subject, chat_id, thread_id) VALUES (?, ?, ?, ?)",
+                (user_id, subject, chat_id, thread_id),
+            )
+
+    def unbind_topic(self, user_id: int, subject: str) -> bool:
+        with self._connection:
+            cursor = self._connection.execute("DELETE FROM topics WHERE user_id = ? AND subject = ?", (user_id, subject))
+        return cursor.rowcount > 0
 
     def agreed_version(self, user_id: int) -> str | None:
         row = self._connection.execute("SELECT version FROM agreements WHERE user_id = ?", (user_id,)).fetchone()

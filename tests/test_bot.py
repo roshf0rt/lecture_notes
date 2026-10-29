@@ -6,6 +6,7 @@ from telegram.ext import ApplicationHandlerStop
 
 from notes_bot import admin, bot
 from notes_bot.bot import (
+    on_topic_button,
     gate,
     on_batch_button,
     on_forgetkey,
@@ -124,12 +125,18 @@ class FakeBot:
     def __init__(self):
         self.copied: list[int] = []
         self.sent: list[tuple[int, str]] = []
+        self.documents: list[tuple[int, int, str]] = []
+        self.topic_messages: list[tuple[int, int]] = []
 
     async def copy_message(self, chat_id, from_chat_id, message_id):
         self.copied.append(chat_id)
 
-    async def send_message(self, chat_id, text, **kwargs):
+    async def send_message(self, chat_id, text, message_thread_id=None, **kwargs):
         self.sent.append((chat_id, text))
+        self.topic_messages.append((chat_id, message_thread_id))
+
+    async def send_document(self, chat_id, document, filename=None, message_thread_id=None, **kwargs):
+        self.documents.append((chat_id, message_thread_id, filename))
 
     async def set_my_commands(self, *args, **kwargs):
         return True
@@ -847,3 +854,77 @@ def test_an_old_agreement_version_does_not_count(tmp_path):
     h.run(on_agreement_button, 8, query=query)
     assert "Соглашение изменилось" in query.answers[-1]
     assert h.services.state.agreed_version(8) == "old-version"  # a stale tap changes nothing
+
+
+# --- group topics -----------------------------------------------------------------------
+
+
+def _in_group(text, thread_id=None, chat_id=-1001234):
+    message = FakeMessage(text=text)
+    message.chat = SimpleNamespace(id=chat_id, type="supergroup")
+    message.message_thread_id = thread_id
+    return message
+
+
+def _bind(h, user_id, subject, thread_id, chat_id=-1001234):
+    from notes_bot.bot import on_bind
+
+    message = _in_group(f"/bind {subject}", thread_id, chat_id)
+    h.run(on_bind, user_id, message=message)
+    return message
+
+
+def test_bind_remembers_the_topic_for_the_subject(tmp_path):
+    h = Harness(tmp_path)
+    reply_text = _bind(h, 5, "Физика", 17).replies[-1]["text"]
+    assert "привязан" in reply_text
+    assert h.services.state.topics(5) == [("Физика", -1001234, 17)]
+    assert "внутри самого раздела" in _bind(h, 5, "Химия", None).replies[-1]["text"]
+    assert h.services.state.topics(5) == [("Физика", -1001234, 17)]
+
+
+def test_bind_outside_a_group_is_refused(tmp_path):
+    from notes_bot.bot import on_bind
+
+    h = Harness(tmp_path)
+    message = FakeMessage(text="/bind Физика")
+    message.chat = SimpleNamespace(id=5, type="private")
+    message.message_thread_id = None
+    h.run(on_bind, 5, message=message)
+    assert "нужна в группе" in message.replies[-1]["text"]
+    assert h.services.state.topics(5) == []
+
+
+def test_a_note_is_offered_to_the_matching_topic_first_and_posted_on_a_tap(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    _bind(h, 5, "Химия", 3)
+    _bind(h, 5, "Лекция", 4)  # the fake note is titled "Лекция", so this subject matches it
+    message = h.text(5, LONG_TEXT)
+    offer = next(reply for reply in message.replies if "Отправить этот конспект" in reply.get("text", ""))
+    labels = [button.text for row in offer["reply_markup"].inline_keyboard for button in row]
+    assert labels[0] == "✅ Лекция" and labels[1] == "Химия"
+    token = offer["reply_markup"].inline_keyboard[0][0].callback_data.split(":")[1]
+
+    h.tap(5, f"tp:{token}:0", on_topic_button)
+    assert h.bot.topic_messages and set(h.bot.topic_messages) == {(-1001234, 4)}
+    assert h.bot.documents == [(-1001234, 4, "Лекция.pdf")]
+
+
+def test_a_note_is_not_posted_without_a_tap_and_cancel_keeps_it_home(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    _bind(h, 5, "Физика", 4)
+    message = h.text(5, LONG_TEXT)
+    assert not h.bot.topic_messages and not h.bot.documents
+    offer = next(reply for reply in message.replies if "Отправить этот конспект" in reply.get("text", ""))
+    token = offer["reply_markup"].inline_keyboard[-1][0].callback_data.split(":")[1]
+    h.tap(5, f"tp:{token}:x", on_topic_button)
+    assert not h.bot.topic_messages and not h.bot.documents
+
+
+def test_no_offer_without_bound_topics(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    message = h.text(5, LONG_TEXT)
+    assert not any("Отправить этот конспект" in reply.get("text", "") for reply in message.replies)

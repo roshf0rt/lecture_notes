@@ -49,11 +49,13 @@ from .menus import (
     settings_view,
     welcome,
 )
+from .notes import document_text
 from .pipeline import NotesPipeline, Result, Source
 from .render_tg import plain_text
 from .services import ADDED_OUTCOMES, SHARED, Services, add_keys, check_keys, edit, key_report, reply, services
 from .settings import SettingsStore, UserSettings
 from .storage import BotState, Options
+from .topics import suggest
 from .themes import CUSTOM, parse_hex
 from .ui import Ui, html
 
@@ -662,6 +664,7 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
         notes.append("на общем ключе")
     await _status(status, f"{ui.e('done')} Конспект готов" + (f" ({', '.join(notes)})" if notes else ""))
     await _send(message, result)
+    await _offer_topics(message, s, user_id, result)
 
 
 async def _status(status: Message, text: str) -> None:
@@ -677,6 +680,121 @@ def _transcript_name(sources) -> str:
 def _file_name(title: str) -> str:
     cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", title).strip()
     return (cleaned or "Конспект")[:80]
+
+
+POST_TTL = 3600
+
+
+@dataclass(frozen=True)
+class Post:
+    created: float
+    user_id: int
+    result: Result
+    targets: list[tuple[str, int, int]]  # (subject, chat id, topic id) in the order the buttons show them
+
+
+async def _offer_topics(message: Message, s: Services, user_id: int, result: Result) -> None:
+    """After the note reached the user's chat, offer to post it to a group topic. Nothing is sent without a tap."""
+    bindings = s.state.topics(user_id)
+    if not bindings:
+        return
+    ui = s.ui()
+    now = time.time()
+    s.posts = {token: post for token, post in s.posts.items() if now - post.created < POST_TTL}
+    ordered, matched = suggest([subject for subject, _, _ in bindings], document_text(result.document))
+    by_subject = {subject: (chat_id, thread_id) for subject, chat_id, thread_id in bindings}
+    targets = [(subject, *by_subject[subject]) for subject in ordered]
+    token = secrets.token_hex(4)
+    s.posts[token] = Post(now, user_id, result, targets)
+    rows = []
+    for index, (subject, _, _) in enumerate(targets):
+        label = f"✅ {subject}" if index < matched else subject
+        rows.append([ui.button("list", label, f"tp:{token}:{index}", style="success" if index < matched else None)])
+    rows.append([ui.button("no", "Не отправлять в группу", f"tp:{token}:x")])
+    hint = ("Бот подобрал раздел по тексту, ✅ отмечен." if matched
+            else "Бот не угадал предмет по тексту, выберите раздел сами.")
+    await reply(message, f"{ui.e('clip')} <b>Отправить этот конспект в группу?</b>\n{hint}",
+                InlineKeyboardMarkup(rows))
+
+
+async def on_topic_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    s = services(context)
+    ui = s.ui()
+    _, token, choice = query.data.split(":")
+    post: Post | None = s.posts.get(token)
+    if post is None or post.user_id != query.from_user.id:
+        await query.answer("Этот вопрос устарел", show_alert=True)
+        await edit(query, f"{ui.e('info')} Этот вопрос устарел. Конспект можно отправить в группу, сделав его заново.")
+        return
+    s.posts.pop(token, None)
+    await query.answer()
+    if choice == "x":
+        await edit(query, f"{ui.e('no')} Не отправлено в группу.")
+        return
+    subject, chat_id, thread_id = post.targets[int(choice)]
+    try:
+        await _post_to_topic(context.bot, chat_id, thread_id, post.result)
+    except TelegramError:
+        log.exception("Could not post a note to topic %s of chat %s", thread_id, chat_id)
+        await edit(query, f"{ui.e('warning')} Не получилось отправить в раздел «{html(subject)}». "
+                          "Проверьте, что бот в группе и раздел не удалён.")
+        return
+    await edit(query, f"{ui.e('done')} Отправлено в раздел «{html(subject)}».")
+
+
+async def _post_to_topic(bot, chat_id: int, thread_id: int, result: Result) -> None:
+    name = _file_name(result.document.title)
+    for text in result.messages or []:
+        try:
+            await bot.send_message(chat_id, text, parse_mode=ParseMode.MARKDOWN_V2, message_thread_id=thread_id)
+        except BadRequest:
+            await bot.send_message(chat_id, plain_text(text), message_thread_id=thread_id)
+    if result.pdf is not None:
+        await bot.send_document(chat_id, document=io.BytesIO(result.pdf), filename=f"{name}.pdf",
+                                message_thread_id=thread_id)
+
+
+async def on_bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """In a group topic: /bind Физика makes that topic the place for the user's physics notes."""
+    message = update.effective_message
+    s = services(context)
+    user_id = update.effective_user.id
+    subject = (message.text or "").partition(" ")[2].strip()
+    if message.chat.type not in ("group", "supergroup"):
+        await reply(message, "Команда /bind нужна в группе, внутри раздела, который вы хотите привязать.")
+        return
+    if not subject:
+        await reply(message, "Напишите название предмета: <code>/bind Физика</code>")
+        return
+    if message.message_thread_id is None:
+        await reply(message, "Напишите /bind внутри самого раздела, а не в общем чате группы.")
+        return
+    s.state.bind_topic(user_id, subject[:60], message.chat.id, message.message_thread_id)
+    await reply(message, f"{s.ui().e('ok')} Раздел привязан к предмету «{html(subject[:60])}». "
+                         "Конспекты по нему можно будет отправлять сюда.")
+
+
+async def on_unbind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    s = services(context)
+    subject = (message.text or "").partition(" ")[2].strip()
+    if s.state.unbind_topic(update.effective_user.id, subject):
+        await reply(message, f"{s.ui().e('ok')} Предмет «{html(subject)}» отвязан от раздела.")
+    else:
+        await reply(message, f"{s.ui().e('info')} Такого предмета нет. Список: /topics")
+
+
+async def on_topics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    s = services(context)
+    bindings = s.state.topics(update.effective_user.id)
+    if not bindings:
+        await reply(message, "Разделов пока нет. Создайте их в группе с темами и напишите внутри каждого "
+                             "<code>/bind Название предмета</code>.")
+        return
+    lines = [f"• {html(subject)}" for subject, _, _ in bindings]
+    await reply(message, "<b>Ваши разделы:</b>\n" + "\n".join(lines) + "\n\nОтвязать: <code>/unbind Название</code>")
 
 
 async def _send(message: Message, result: Result) -> None:
@@ -755,15 +873,20 @@ def build_application(config: Config) -> Application:
     application.add_handler(CallbackQueryHandler(on_keys_button, pattern=r"^ky:"))
     application.add_handler(CallbackQueryHandler(on_batch_button, pattern=r"^bt:"))
     application.add_handler(CallbackQueryHandler(on_agreement_button, pattern=r"^ag:"))
+    application.add_handler(CallbackQueryHandler(on_topic_button, pattern=r"^tp:"))
+    application.add_handler(CommandHandler("bind", on_bind))
+    application.add_handler(CommandHandler("unbind", on_unbind))
+    application.add_handler(CommandHandler("topics", on_topics))
     application.add_handler(CallbackQueryHandler(admin.on_admin_button, pattern=r"^ad:"))
     application.add_handler(
         MessageHandler(
-            filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE | filters.Document.ALL
-            | filters.PHOTO | filters.ANIMATION,
+            (filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE | filters.Document.ALL
+             | filters.PHOTO | filters.ANIMATION) & filters.ChatType.PRIVATE,
             on_media,
         )
     )
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    # Notes are made in private chats only: a group is where they are posted, not where they are asked for.
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_text))
     return application
 
 

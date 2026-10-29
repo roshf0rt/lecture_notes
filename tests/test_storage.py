@@ -68,3 +68,16 @@ def test_ban_whitelist_and_admins(tmp_path):
     assert state.admins() == [7, 100]
     state.set_admin(7, False)
     assert not state.is_admin(7)
+
+
+def test_topic_bindings_are_per_user_and_replace_on_rebind(tmp_path):
+    from notes_bot.storage import BotState, Options
+
+    state = BotState(tmp_path / "bot.sqlite3", Options(model="m"))
+    state.bind_topic(5, "Физика", -100, 3)
+    state.bind_topic(5, "Физика", -200, 9)  # the same subject bound again, e.g. after the group became a supergroup
+    state.bind_topic(6, "Физика", -300, 1)
+    assert state.topics(5) == [("Физика", -200, 9)]
+    assert state.unbind_topic(5, "Физика") is True
+    assert state.unbind_topic(5, "Физика") is False
+    assert state.topics(6) == [("Физика", -300, 1)]
