@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import Protocol
 
 from .audio import AudioError, prepare
+from .blocks import ONE_MESSAGE_LENGTH_ID
 from .gemini import INLINE_LIMIT_BYTES, GeminiError
 from .notes import NoteDocument
 from .render_pdf import render_pdf
-from .render_tg import render_messages
+from .render_tg import fit_one_message, render_messages
 from .settings import UserSettings
 from .themes import get_theme
 
@@ -95,10 +96,13 @@ class NotesPipeline:
             raise GeminiError("Материал слишком длинный. Разбейте его на несколько частей.")
 
         await progress("writing")
-        written = await self._model.write(text, settings.blocks, settings.length, settings.language)
+        length = ONE_MESSAGE_LENGTH_ID if settings.output == "tg_one" else settings.length
+        written = await self._model.write(text, settings.blocks, length, settings.language)
         document = written.only(settings.blocks)
 
         await progress("rendering")
+        if settings.output == "tg_one":
+            return Result(document, text, messages=fit_one_message(document, premium=premium))
         pdf = messages = None
         if settings.output in ("pdf", "both"):
             theme = get_theme(settings.theme, settings.custom_color)

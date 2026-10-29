@@ -203,3 +203,42 @@ def test_both_outputs_are_the_default_and_produce_pdf_and_messages():
     assert result.pdf.startswith(b"%PDF") and result.messages
     tg_only, _ = _run(NotesPipeline(model), UserSettings(output="tg"), text=LONG_TRANSCRIPT)
     assert tg_only.pdf is None and tg_only.messages
+
+
+def test_one_message_output_asks_for_the_short_length_and_fits_one_message():
+    seen = {}
+
+    class LengthModel(FakeModel):
+        async def write(self, transcript, enabled, length, language="auto"):
+            seen["length"] = length
+            return NoteDocument(title="Тема", main_idea="Главная идея. " * 10, takeaways=["Вывод " * 8], questions=["Вопрос?"])
+
+    result, _ = _run(NotesPipeline(LengthModel()), UserSettings(output="tg_one"), text=LONG_TRANSCRIPT)
+    assert seen["length"] == "onepage"
+    assert len(result.messages) == 1 and result.pdf is None
+
+
+def test_a_long_note_loses_the_least_essential_blocks_to_fit_one_message():
+    from notes_bot.notes import Concept
+    from notes_bot.render_tg import TG_LIMIT, fit_one_message
+
+    big = NoteDocument(
+        title="Большая лекция",
+        main_idea="Главная идея. " * 40,
+        concepts=[Concept(term=f"Понятие {n}", definition="Определение. " * 30) for n in range(12)],
+        takeaways=["Вывод. " * 30 for _ in range(6)],
+        questions=["Вопрос " * 20 for _ in range(6)],
+        practice=["Задание " * 20 for _ in range(6)],
+    )
+    messages = fit_one_message(big)
+    assert len(messages) == 1 and len(messages[0]) <= TG_LIMIT
+    assert "Главная идея" in messages[0]
+
+
+def test_the_short_length_is_not_a_choice_the_user_can_save():
+    from notes_bot.settings import UserSettings as Settings
+
+    assert Settings.from_dict({"length": "onepage"}).length == "medium"
+    assert Settings.from_dict({"output": "tg_one"}).output == "tg_one"
+    _, markup = settings_view(PLAIN, "output", UserSettings(output="tg_one"))
+    assert any("Одно короткое сообщение" in label for label in _labels(markup))

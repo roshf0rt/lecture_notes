@@ -183,6 +183,30 @@ def render_messages(doc: NoteDocument, limit: int = TG_LIMIT, premium: bool = Fa
     return [f"_\\({index}/{len(messages)}\\)_\n{message}" for index, message in enumerate(messages, start=1)]
 
 
+# Blocks dropped first when the note does not fit into one message: the least essential come first.
+_DROP_ORDER = ("questions", "practice", "examples", "differences", "process", "context", "concepts", "warnings")
+
+
+def fit_one_message(doc: NoteDocument, premium: bool = False) -> list[str]:
+    """Render the note as a single message, dropping the least essential blocks until it fits."""
+    kept = [block.id for block in BLOCKS if doc.has_block(block.id)]
+    candidate = doc.only(kept)
+    messages = render_messages(candidate, premium=premium)
+    for block_id in _DROP_ORDER:
+        if len(messages) == 1:
+            return messages
+        if block_id in kept:
+            kept.remove(block_id)
+            candidate = doc.only(kept)
+            messages = render_messages(candidate, premium=premium)
+    # Still too long: shorten the free text, which is what the model wrote most of.
+    shorter = candidate.model_copy(update={
+        "main_idea": candidate.main_idea[:400],
+        "takeaways": [item[:200] for item in candidate.takeaways],
+    })
+    return render_messages(shorter, premium=premium)[:1]
+
+
 def plain_text(markdown: str) -> str:
     """Fallback for a message Telegram refused: drop the markup and keep the words."""
     text = re.sub(r"!\[([^\]]*)\]\(tg://emoji\?id=\d+\)", r"\1", markdown)

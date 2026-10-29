@@ -67,5 +67,14 @@ LENGTHS: tuple[Length, ...] = (
     ),
 )
 
-LENGTH_BY_ID: dict[str, Length] = {length.id: length for length in LENGTHS}
+# Used only for the "one short message" output: it has to fit into one Telegram message.
+ONE_MESSAGE_LENGTH = Length(
+    "onepage",
+    "Одно сообщение",
+    "Очень коротко, чтобы конспект целиком поместился в одно сообщение Telegram, не больше 3000 знаков вместе с оформлением. "
+    "Оставь только главную идею, самые важные понятия и выводы, по одной-две строки на пункт.",
+)
+ONE_MESSAGE_LENGTH_ID = ONE_MESSAGE_LENGTH.id
+
+LENGTH_BY_ID: dict[str, Length] = {length.id: length for length in (*LENGTHS, ONE_MESSAGE_LENGTH)}
 DEFAULT_LENGTH = "medium"

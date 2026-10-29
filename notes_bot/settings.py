@@ -5,10 +5,10 @@ import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .blocks import BLOCKS, DEFAULT_BLOCKS, DEFAULT_LENGTH, LENGTH_BY_ID
+from .blocks import BLOCKS, DEFAULT_BLOCKS, DEFAULT_LENGTH, LENGTHS
 from .themes import CUSTOM, DEFAULT_THEME, THEMES, parse_hex
 
-OUTPUTS = ("pdf", "tg", "both")
+OUTPUTS = ("pdf", "tg", "both", "tg_one")
 DEFAULT_OUTPUT = "both"
 LANGUAGES = ("auto", "ru")
 
@@ -58,7 +58,7 @@ class UserSettings:
         language = raw.get("language")
         return cls(
             output=output if output in OUTPUTS else DEFAULT_OUTPUT,
-            length=length if length in LENGTH_BY_ID else DEFAULT_LENGTH,
+            length=length if length in {item.id for item in LENGTHS} else DEFAULT_LENGTH,
             theme=theme,
             custom_color=custom_color,
             blocks=blocks,
