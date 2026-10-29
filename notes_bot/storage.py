@@ -90,6 +90,7 @@ class BotState:
                 CREATE TABLE IF NOT EXISTS options (name TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS whitelist (user_id INTEGER PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS agreements (user_id INTEGER PRIMARY KEY, version TEXT NOT NULL, accepted_at REAL NOT NULL);
                 """
             )
             self._connection.executemany("INSERT OR IGNORE INTO whitelist (user_id) VALUES (?)", [(i,) for i in allowed_ids])
@@ -220,6 +221,17 @@ class BotState:
         )
 
     # --- jobs ----------------------------------------------------------------------------
+
+    def agreed_version(self, user_id: int) -> str | None:
+        row = self._connection.execute("SELECT version FROM agreements WHERE user_id = ?", (user_id,)).fetchone()
+        return row[0] if row else None
+
+    def accept_agreement(self, user_id: int, version: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO agreements (user_id, version, accepted_at) VALUES (?, ?, ?)",
+                (user_id, version, self._clock()),
+            )
 
     def log_job(self, user_id: int, kind: str, ok: bool, seconds: float, error: str = "") -> None:
         with self._connection:

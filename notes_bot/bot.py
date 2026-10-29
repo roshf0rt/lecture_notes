@@ -27,6 +27,7 @@ from telegram.ext import (
 from . import admin
 from .audio import is_media, sniff
 from .config import Config
+from .agreement import ACCEPT_PREFIX, AGREEMENT, AGREEMENT_VERSION
 from .gateway import GatewayClient, RequestLimiter
 from .gemini import GeminiClient, GeminiError
 from .keys import KEY_PATTERN, KeyVault, is_gateway_key
@@ -127,9 +128,38 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         welcome(ui, s.keys.count(user_id) > 0, s.options().shared_keys, s.config.local_mode),
         main_keyboard(ui, s.is_admin(user_id)),
     )
+    if not await _agreed(update, context):
+        return
     if s.is_admin(user_id):
         with suppress(TelegramError):
             await context.bot.set_my_commands(ADMIN_COMMANDS, scope=BotCommandScopeChat(update.effective_chat.id))
+
+
+async def _agreed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """True if the user accepted the current agreement. Otherwise shows it and returns False."""
+    s = services(context)
+    user_id = update.effective_user.id
+    if s.state.agreed_version(user_id) == AGREEMENT_VERSION:
+        return True
+    ui = s.ui()
+    keyboard = InlineKeyboardMarkup([[ui.button("ok", "Принимаю", ACCEPT_PREFIX + AGREEMENT_VERSION, style="success")]])
+    await reply(update.effective_message, f"{ui.e('info')} {AGREEMENT}", keyboard)
+    return False
+
+
+async def on_agreement_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    s = services(context)
+    ui = s.ui()
+    version = query.data.removeprefix(ACCEPT_PREFIX)
+    if version != AGREEMENT_VERSION:
+        await query.answer("Соглашение изменилось, прочитайте новое", show_alert=True)
+        await edit(query, f"{ui.e('info')} {AGREEMENT}", InlineKeyboardMarkup([[
+            ui.button("ok", "Принимаю", ACCEPT_PREFIX + AGREEMENT_VERSION, style="success")]]))
+        return
+    s.state.accept_agreement(query.from_user.id, version)
+    await query.answer()
+    await edit(query, f"{ui.e('ok')} Спасибо, соглашение принято. Пришлите запись или текст лекции.")
 
 
 async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -312,6 +342,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if found and not KEY_PATTERN.sub("", text).strip():
         await _save_keys(update, context, found)
         return
+    if not await _agreed(update, context):
+        return
     await _run_job(update, context, [Source(text=text)])
 
 
@@ -394,6 +426,8 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     found = _attachment(message)
     if found is None or message.animation:
+        return
+    if not await _agreed(update, context):
         return
     attachment, name, mime = found
     limit = LOCAL_MAX_FILE_BYTES if s.config.local_mode else MAX_FILE_BYTES
@@ -720,6 +754,7 @@ def build_application(config: Config) -> Application:
     application.add_handler(CallbackQueryHandler(on_settings_button, pattern=r"^st:"))
     application.add_handler(CallbackQueryHandler(on_keys_button, pattern=r"^ky:"))
     application.add_handler(CallbackQueryHandler(on_batch_button, pattern=r"^bt:"))
+    application.add_handler(CallbackQueryHandler(on_agreement_button, pattern=r"^ag:"))
     application.add_handler(CallbackQueryHandler(admin.on_admin_button, pattern=r"^ad:"))
     application.add_handler(
         MessageHandler(

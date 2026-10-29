@@ -166,6 +166,9 @@ class Harness:
         self.application = FakeApplication(self.services)
         self.bot = FakeBot()
         self.user_data: dict[int, dict] = {}
+        # Most tests are about notes, not the agreement: users arrive having accepted it.
+        # Agreement tests switch this off.
+        self.auto_accept = True
 
     def context(self, user_id):
         return SimpleNamespace(application=self.application, bot=self.bot,
@@ -197,6 +200,10 @@ class Harness:
         asyncio.run(all_of_them())
 
     async def _through_gate(self, handler, user_id, **kwargs):
+        from notes_bot.agreement import AGREEMENT_VERSION
+
+        if self.auto_accept:
+            self.services.state.accept_agreement(user_id, AGREEMENT_VERSION)
         update = self.update(user_id, **kwargs)
         context = self.context(user_id)
         try:
@@ -797,3 +804,46 @@ def test_extras_can_be_switched_on_in_the_settings_menu(tmp_path):
     assert h.services.store.get(1).extras == ("questions",)
     h.tap(1, "st:ext:questions", on_settings_button)
     assert h.services.store.get(1).extras == ()
+
+
+def test_nothing_is_made_before_the_agreement_is_accepted(tmp_path):
+    from notes_bot.agreement import AGREEMENT_VERSION
+
+    h = Harness(tmp_path)
+    h.auto_accept = False
+    h.services.keys.add(8, KEY)
+    message = h.text(8, LONG_TEXT)
+    assert not [call for call in h.calls if call[0] == "write"]
+    assert "Пользовательское соглашение" in message.replies[-1]["text"]
+    assert h.services.state.agreed_version(8) is None
+    assert AGREEMENT_VERSION in str(message.replies[-1]["reply_markup"])
+
+
+def test_accepting_the_agreement_lets_the_user_make_notes(tmp_path):
+    from notes_bot.agreement import AGREEMENT_VERSION
+    from notes_bot.bot import on_agreement_button
+
+    h = Harness(tmp_path)
+    h.auto_accept = False
+    h.services.keys.add(8, KEY)
+    query = FakeQuery(f"ag:yes:{AGREEMENT_VERSION}", 8)
+    h.run(on_agreement_button, 8, query=query)
+    assert h.services.state.agreed_version(8) == AGREEMENT_VERSION
+    message = h.text(8, LONG_TEXT)
+    assert "Конспект готов" in message.edits[-1]
+
+
+def test_an_old_agreement_version_does_not_count(tmp_path):
+    from notes_bot.agreement import AGREEMENT_VERSION
+    from notes_bot.bot import on_agreement_button
+
+    h = Harness(tmp_path)
+    h.auto_accept = False
+    h.services.keys.add(8, KEY)
+    h.services.state.accept_agreement(8, "old-version")
+    message = h.text(8, LONG_TEXT)
+    assert "Пользовательское соглашение" in message.replies[-1]["text"]
+    query = FakeQuery("ag:yes:old-version", 8)
+    h.run(on_agreement_button, 8, query=query)
+    assert "Соглашение изменилось" in query.answers[-1]
+    assert h.services.state.agreed_version(8) == "old-version"  # a stale tap changes nothing
