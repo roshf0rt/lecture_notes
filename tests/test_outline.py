@@ -4,7 +4,7 @@ import pytest
 
 from notes_bot.gemini import GeminiError
 from notes_bot.notes import NoteDocument
-from notes_bot.outline import blocks_of, fixed, marked, plan
+from notes_bot.outline import MIN_PART_CHARS, fixed, marked, paragraphs_of, plan
 from notes_bot.pipeline import NotesPipeline, Source
 from notes_bot.settings import UserSettings
 
@@ -13,24 +13,32 @@ def _long_text(paragraphs=400):
     return "\n".join(f"Абзац номер {n} о теме {n // 50}, с тремя словами и числом {n * 7}." for n in range(paragraphs))
 
 
-def test_blocks_keep_paragraphs_whole_and_are_about_the_size():
-    text = _long_text(300)
-    blocks = blocks_of(text, size=1000)
-    assert len(blocks) > 5
-    assert "\n".join(blocks).split("\n") == text.split("\n")  # nothing lost, nothing retyped
-    assert all(len(block) < 1100 for block in blocks)
+def test_every_non_empty_line_is_a_paragraph_the_model_can_point_at():
+    text = "Первый абзац.\n\n  \nВторой абзац.\n"
+    assert paragraphs_of(text) == ["Первый абзац.", "Второй абзац."]
 
 
-def test_marked_text_numbers_the_blocks():
-    assert marked(["первый", "второй"]).startswith("[блок 0]\nпервый\n\n[блок 1]")
+def test_marked_text_numbers_the_paragraphs():
+    assert marked(["первый", "второй"]) == "[0] первый\n[1] второй"
 
 
 def test_the_model_starts_become_parts_and_the_text_is_cut_not_rewritten():
-    blocks = [f"блок {n}" for n in range(6)]
+    big = "x" * MIN_PART_CHARS
+    blocks = [f"блок {n} {big}" for n in range(6)]
     parts = plan([{"title": "Введение", "from": 0}, {"title": "Механика", "from": 2}, {"title": "Оптика", "from": 4}],
                  blocks, limit=10_000)
     assert [part.title for part in parts] == ["Введение", "Механика", "Оптика"]
-    assert parts[0].text == "блок 0\n\nблок 1" and parts[2].text == "блок 4\n\nблок 5"
+    assert parts[0].text.startswith("блок 0") and parts[0].text.endswith("блок 1 " + big)
+    assert parts[2].text.startswith("блок 4") and parts[2].text.endswith("блок 5 " + big)
+
+
+def test_a_tiny_topic_joins_the_one_before_it():
+    big = "x" * (MIN_PART_CHARS + 10)
+    blocks = [f"абзац {n} {big}" for n in range(3)]
+    parts = plan([{"title": "Большая", "from": 0}, {"title": "Короткая", "from": 2}], blocks[:2] + ["кусок"],
+                 limit=10_000)
+    assert [part.title for part in parts] == ["Большая"]
+    assert parts[0].text.endswith("кусок")
 
 
 def test_unusable_answers_fall_back_to_equal_parts():
@@ -78,7 +86,7 @@ def test_a_long_semester_text_gets_one_note_per_topic(monkeypatch):
     import notes_bot.pipeline as pipeline
 
     text = _long_text(3000)  # well over SPLIT_CHARS
-    blocks = blocks_of(text)
+    blocks = paragraphs_of(text)
     model = SplittingModel(outline=[{"title": "Первая", "from": 0}, {"title": "Вторая", "from": len(blocks) // 2}])
     results = _run_parts(model, UserSettings(output="pdf"), text=text)
     assert len(results) == 2 and len(model.written) == 2
@@ -86,10 +94,11 @@ def test_a_long_semester_text_gets_one_note_per_topic(monkeypatch):
 
 
 def test_split_on_request_makes_topics_even_for_a_short_text():
-    model = SplittingModel(outline=[{"title": "Одна", "from": 0}, {"title": "Другая", "from": 1}])
-    short = "\n".join(f"Короткая строка номер {n} о {n % 3} разных вещах." for n in range(120))
+    short = "\n".join(f"Строка номер {n} о {n % 3} разных вещах и примере, которым заканчивается абзац." for n in range(120))
+    outline = [{"title": "Одна", "from": 0}, {"title": "Другая", "from": 60}]
+    model = SplittingModel(outline=outline)
     assert len(_run_parts(model, UserSettings(output="pdf"), text=short)) == 1  # no request: one note
-    model = SplittingModel(outline=[{"title": "Одна", "from": 0}, {"title": "Другая", "from": 1}])
+    model = SplittingModel(outline=outline)
     results = _run_parts(model, UserSettings(output="pdf"), sources=[Source(text=short, split=True)])
     assert len(results) == 2
 
@@ -102,6 +111,6 @@ def test_if_the_outline_fails_the_text_is_still_split_into_notes():
 
 
 def test_fixed_parts_cover_the_whole_text():
-    blocks = blocks_of(_long_text(400), size=1000)
+    blocks = paragraphs_of(_long_text(400))
     parts = fixed(blocks, limit=5000)
     assert "".join(part.text.replace("\n", "") for part in parts) == "".join(block.replace("\n", "") for block in blocks)

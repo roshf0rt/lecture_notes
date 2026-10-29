@@ -15,7 +15,7 @@ from .render_pdf import render_pdf
 from .transcript import junk_reason
 from .render_tg import fit_one_message, render_messages
 from .settings import UserSettings
-from .outline import OUTLINE_PROMPT, SPLIT_CHARS, Part, blocks_of, marked, plan
+from .outline import SPLIT_CHARS, Part, marked, paragraphs_of, plan
 from .themes import get_theme
 
 log = logging.getLogger(__name__)
@@ -118,7 +118,7 @@ class NotesPipeline:
         return results
 
     async def _outline(self, text: str) -> list[Part]:
-        blocks = blocks_of(text)
+        blocks = paragraphs_of(text)
         try:
             raw = await self._model.outline(marked(blocks))
         except GeminiError:
