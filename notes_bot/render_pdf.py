@@ -12,7 +12,7 @@ from .notes import NoteDocument
 from .themes import Theme, tint
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
-TOC_MIN_SECTIONS = 6
+TOC_MIN_SECTIONS = 3
 _INLINE = re.compile(r"\*\*(.+?)\*\*|`([^`]+)`")
 
 

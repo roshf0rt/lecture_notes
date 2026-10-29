@@ -111,6 +111,13 @@ code {
 .toc-list a {
   color: #37352f;
   text-decoration: none;
+  display: block;
+}
+
+/* Dotted leader and the page of the section, so the entry works even where links do not. */
+.toc-list a::after {
+  content: leader(".") target-counter(attr(href), page);
+  color: #9b9a97;
 }
 
 table {

@@ -592,15 +592,6 @@ def test_admins_hear_about_new_users_when_asked(tmp_path, notify):
     assert len([chat for chat, _ in h.bot.sent if chat == ADMIN]) == (1 if notify else 0)
 
 
-def test_skipped_blocks_are_named_after_the_note(tmp_path):
-    h = Harness(tmp_path)
-    h.services.keys.add(3, KEY)
-    h.services.store.save(3, UserSettings(blocks=("takeaways", "examples")))
-    message = h.text(3, LONG_TEXT)
-    assert "Примеры и кейсы" in message.replies[-1]["text"]
-    assert "/settings" in message.replies[-1]["text"]
-
-
 def test_second_note_waits_in_line_instead_of_being_refused(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(3, KEY)

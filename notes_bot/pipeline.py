@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Protocol
 
 from .audio import AudioError, prepare
-from .blocks import BY_ID
 from .gemini import INLINE_LIMIT_BYTES, GeminiError
 from .notes import NoteDocument
 from .render_pdf import render_pdf
@@ -51,8 +50,6 @@ class Result:
     transcript: str
     pdf: bytes | None = None
     messages: list[str] | None = None
-    # Titles of blocks the user turned on but the material did not fill.
-    skipped: tuple[str, ...] = ()
 
 
 class NotesPipeline:
@@ -100,7 +97,6 @@ class NotesPipeline:
         await progress("writing")
         written = await self._model.write(text, settings.blocks, settings.length, settings.language)
         document = written.only(settings.blocks)
-        skipped = tuple(BY_ID[block].title for block in settings.blocks if not document.has_block(block))
 
         await progress("rendering")
         pdf = messages = None
@@ -109,7 +105,7 @@ class NotesPipeline:
             pdf = await asyncio.to_thread(render_pdf, document, theme)
         if settings.output in ("tg", "both"):
             messages = render_messages(document, premium=premium)
-        return Result(document, text, pdf=pdf, messages=messages, skipped=skipped)
+        return Result(document, text, pdf=pdf, messages=messages)
 
     async def _transcribe(self, source: Source) -> str:
         try:

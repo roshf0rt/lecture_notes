@@ -162,10 +162,6 @@ def test_a_failing_part_is_named_in_the_error():
         _run(NotesPipeline(BrokenSecond()), UserSettings(), sources=sources)
 
 
-def test_enabled_blocks_without_material_are_reported_as_skipped():
-    result, _ = _run(NotesPipeline(FakeModel()), UserSettings(blocks=("takeaways", "examples")), text=LONG_TRANSCRIPT)
-    assert result.skipped == ("Примеры и кейсы",)
-
 
 def test_config_reads_the_local_api_address(monkeypatch):
     from notes_bot.config import Config
