@@ -172,6 +172,22 @@ async def to_mp3(data: bytes, extension: str) -> bytes:
     return await _ffmpeg(data, None, extension, ["-c:a", "libmp3lame", "-b:a", "32k"], "output.mp3")
 
 
+async def duration_seconds(data: bytes, extension: str) -> float:
+    """Length of the recording in seconds; 0 when it cannot be read."""
+    with tempfile.TemporaryDirectory(prefix="notes-bot-") as folder:
+        source = Path(folder) / f"input{extension}"
+        source.write_bytes(data)
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(source),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await process.communicate()
+        try:
+            return float(stdout.decode().strip())
+        except ValueError:
+            return 0.0
+
+
 async def split_mp3(data: bytes, extension: str, seconds: int) -> list[bytes]:
     """Cut the recording into MP3 pieces of about `seconds` each, in order."""
     with tempfile.TemporaryDirectory(prefix="notes-bot-") as folder:

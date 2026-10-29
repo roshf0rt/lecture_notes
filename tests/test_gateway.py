@@ -128,6 +128,7 @@ def test_supplier_reason_is_shown_without_the_key():
 def test_long_recording_is_cut_and_the_pieces_are_joined_in_order(monkeypatch):
     import notes_bot.gateway as gateway
 
+    monkeypatch.setattr(gateway, "CUT_AFTER_SECONDS", 1)
     monkeypatch.setattr(gateway, "SEGMENT_SECONDS", 1)
     wav = subprocess.run(
         ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-f", "wav", "pipe:1"],
@@ -143,3 +144,32 @@ def test_long_recording_is_cut_and_the_pieces_are_joined_in_order(monkeypatch):
     assert len(requests) >= 3
     expected = "\n\n".join(f"кусок {number}" for number in range(1, len(requests) + 1))
     assert text == expected
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_recording_under_the_cut_threshold_goes_as_one_request():
+    wav = subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-f", "wav", "pipe:1"],
+        check=True, capture_output=True,
+    ).stdout
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return _reply("целиком")
+
+    assert asyncio.run(_client(handler).transcribe(wav, "short.wav")) == "целиком"
+    assert len(requests) == 1
+
+
+def test_content_given_as_parts_is_read():
+    body = {"choices": [{"message": {"content": [{"type": "text", "text": "часть ответа"}]}, "finish_reason": "stop"}]}
+    text, _ = asyncio.run(_client(lambda request: httpx.Response(200, json=body))._post([], 16))
+    assert text == "часть ответа"
+
+
+def test_unreadable_reply_shows_what_the_supplier_sent_without_the_key():
+    with pytest.raises(GeminiError) as caught:
+        asyncio.run(_client(lambda request: httpx.Response(200, json={"oops": GATEWAY_KEY})).check_key())
+    assert "не понимает" in str(caught.value) and "Ответ поставщика (200)" in str(caught.value)
+    assert GATEWAY_KEY not in str(caught.value)

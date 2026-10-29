@@ -13,7 +13,7 @@ import re
 
 import httpx
 
-from .audio import AudioError, canonical_extension, ffmpeg_available, split_mp3, to_mp3
+from .audio import AudioError, canonical_extension, duration_seconds, ffmpeg_available, split_mp3, to_mp3
 from .gemini import AUTH, MODEL, OTHER, OVERLOADED, QUOTA, TRANSCRIBE_PROMPT, UNREACHABLE, GeminiError
 from .notes import SYSTEM_PROMPT, NoteDocument, build_user_message, note_schema
 
@@ -21,13 +21,19 @@ log = logging.getLogger(__name__)
 
 GATEWAY_URL = "https://api.aikeysforyou.com/v1"
 MAX_OUTPUT_TOKENS = 16_000
-# The supplier is slow on long recordings and requests time out, so long audio is cut into short pieces.
+# Recordings longer than this are cut; the supplier is slow on long audio and requests time out.
+CUT_AFTER_SECONDS = 15 * 60
 SEGMENT_SECONDS = 10 * 60
 REQUEST_TIMEOUT = 300.0
 BAD_FORMAT = "Конспект получился в неверном формате. Попробуйте ещё раз."
 
 
 KEY_IN_TEXT = re.compile(r"sk-cvc-[0-9A-Za-z]+")
+
+
+def _reply_snippet(response: httpx.Response) -> str:
+    text = KEY_IN_TEXT.sub("sk-cvc-…", response.text[:200]).strip()
+    return f" Ответ поставщика ({response.status_code}): {text}" if text else ""
 
 
 def _supplier_says(response: httpx.Response) -> str:
@@ -98,24 +104,29 @@ class GatewayClient:
             raise _classify(response)
         try:
             choice = response.json()["choices"][0]
-            text = choice["message"].get("content") or ""
+            content = choice["message"].get("content") or ""
         except (ValueError, KeyError, IndexError, TypeError) as error:
-            raise GeminiError("Поставщик ключа вернул ответ, который бот не понимает.", OTHER) from error
-        return text, choice.get("finish_reason") == "length"
+            raise GeminiError(f"Поставщик ключа вернул ответ, который бот не понимает.{_reply_snippet(response)}", OTHER) from error
+        if isinstance(content, list):  # some models answer with a list of parts
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        return content, choice.get("finish_reason") == "length"
 
     async def check_key(self) -> None:
         await self._post([{"role": "user", "content": "ping"}], max_tokens=16)
 
     async def transcribe(self, audio: bytes, filename: str) -> str:
         extension = canonical_extension(filename) or ".ogg"
-        if ffmpeg_available():
-            # Every piece goes out as MP3, the audio format the supplier takes; long recordings are cut first.
-            try:
+        # Every piece goes out as MP3, the audio format the supplier takes; long recordings are cut first.
+        try:
+            long_recording = ffmpeg_available() and await duration_seconds(audio, extension) > CUT_AFTER_SECONDS
+            if long_recording:
                 pieces = await split_mp3(audio, extension, SEGMENT_SECONDS)
-            except AudioError as error:
-                raise GeminiError(str(error)) from error
-        else:
-            pieces = [await to_mp3(audio, extension)] if extension != ".mp3" else [audio]
+            elif extension == ".mp3":
+                pieces = [audio]
+            else:
+                pieces = [await to_mp3(audio, extension)]
+        except AudioError as error:
+            raise GeminiError(str(error)) from error
         texts = [await self._transcribe_piece(piece) for piece in pieces]
         text = "\n\n".join(part for part in texts if part)
         if not text:
