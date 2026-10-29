@@ -996,3 +996,51 @@ def test_a_group_always_gets_the_pdf_and_one_short_message(tmp_path):
     h.tap(5, f"tp:{token}:0", on_topic_button)
     assert len(h.bot.topic_messages) == 1
     assert h.bot.documents == [(-1001234, 4, "Лекция.pdf")]
+
+
+def test_semester_with_a_subject_posts_every_topic_to_its_topic_without_asking(tmp_path):
+    from notes_bot.bot import on_semester
+
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    _bind(h, 5, "Физика", 9)
+    message = FakeMessage(text=f"/semester\nФизика\n{LONG_TEXT}")
+    h.run(on_semester, 5, message=message)
+    assert h.bot.documents == [(-1001234, 9, "Лекция.pdf")]
+    assert not any("Отправить этот конспект" in reply.get("text", "") for reply in message.replies)
+
+
+def test_semester_with_an_unknown_subject_is_refused_before_any_work(tmp_path):
+    from notes_bot.bot import on_semester
+
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    _bind(h, 5, "Физика", 9)
+    message = FakeMessage(text=f"/semester\nХимия\n{LONG_TEXT}")
+    h.run(on_semester, 5, message=message)
+    assert "Раздела «Химия» нет" in message.replies[-1]["text"]
+    assert not [call for call in h.calls if call[0] == "write"]
+
+
+def test_semester_subject_needs_membership_of_the_group(tmp_path):
+    from notes_bot.bot import on_semester
+
+    h = Harness(tmp_path)
+    h.services.keys.add(7, KEY)
+    _bind(h, 5, "Физика", 9)  # user 7 is not in the group
+    message = FakeMessage(text=f"/semester\nФизика\n{LONG_TEXT}")
+    h.run(on_semester, 7, message=message)
+    assert "Раздела «Физика» нет" in message.replies[-1]["text"]
+
+
+def test_semester_on_a_long_text_runs_through_the_bot_and_reports_progress(tmp_path):
+    from notes_bot.bot import on_semester
+
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    long_text = "\n".join(f"Абзац номер {n} о теме {n // 50}, с тремя словами и числом {n * 7}." for n in range(3000))
+    message = FakeMessage(text=f"/semester\n{long_text}")
+    h.run(on_semester, 5, message=message)
+    assert "Конспект готов" in message.edits[-1] or "Конспект готов" in " ".join(message.edits)
+    assert [call for call in h.calls if call[0] == "write"]
+    assert not any("Не получилось" in text for text in message.edits)

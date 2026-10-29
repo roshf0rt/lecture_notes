@@ -37,6 +37,8 @@ class Source:
     path: Path | None = None
     # The user asked for one note per topic (/semester), whatever the length.
     split: bool = False
+    # With /semester and a subject name: every note goes to that subject's topic, without asking.
+    subject: str | None = None
 
     @property
     def is_audio(self) -> bool:

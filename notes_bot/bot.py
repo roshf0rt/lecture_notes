@@ -72,6 +72,7 @@ STAGES = {
     "queued": ("clock", "В очереди"),
     "transcribing": ("transcribing", "Расшифровываю запись…"),
     "writing": ("writing", "Пишу конспект…"),
+    "outlining": ("writing", "Делю материал на темы…"),
     "rendering": ("rendering", "Оформляю…"),
 }
 AWAIT_KEY, AWAIT_COLOR = "key", "color"
@@ -428,16 +429,49 @@ def _asks_topics(text: str | None) -> bool:
     return (text or "").strip().lower().startswith(SEMESTER)
 
 
+def _all_subjects(s: Services) -> list[str]:
+    return [subject for _, _, topics in s.state.groups_with_topics() for subject, _ in topics]
+
+
+SUBJECT_MAX = 40
+
+
+def _split_semester(body: str, subjects: list[str]) -> tuple[str | None, str, str | None]:
+    """What follows /semester: a subject (on its own first line, or alone), the text, and an unknown subject if the
+    first line looks like one but matches nothing. A subject line is short and does not end like a sentence."""
+    stripped = body.strip()
+    head, newline, rest = stripped.partition("\n")
+    head = head.strip()
+    if not head or len(head) > SUBJECT_MAX or head[-1] in ".?!":
+        return None, stripped, None
+    for subject in subjects:
+        if head.lower() == subject.lower():
+            return subject, rest.strip() if newline else "", None
+    return None, stripped, head
+
+
+async def _direct_target(bot, s: Services, user_id: int, subject: str) -> tuple[int, int, str] | None:
+    """Where a subject goes for this user: the group topic, if the user is in that group."""
+    for chat_id, title, topics in s.state.groups_with_topics():
+        for name, thread_id in topics:
+            if name.lower() == subject.lower() and await _is_member(bot, s, chat_id, user_id):
+                return chat_id, thread_id, title
+    return None
+
+
 async def on_semester(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/semester and then the text: a note per topic of the whole text."""
+    """/semester [предмет] и текст: конспект на каждую тему. С предметом все они уходят в его раздел."""
     message = update.effective_message
-    text = (message.text or "").partition(" ")[2].strip()
-    if not text:
-        await reply(message, f"Напишите <code>{SEMESTER}</code> и текст лекций, или приложите файл с этой подписью.")
+    s = services(context)
+    body = re.sub(r"^/semester(@\S+)?", "", message.text or "", count=1)
+    subject, text, unknown = _split_semester(body, _all_subjects(s))
+    if not text and unknown is None:
+        await reply(message, f"Напишите <code>{SEMESTER}</code>, с новой строки название предмета (если нужно), "
+                             "а дальше текст лекций. Можно и файлом с такой подписью.")
         return
     if not await _agreed(update, context):
         return
-    await _run_job(update, context, [Source(text=text, split=True)])
+    await _run_job(update, context, [Source(text=text, split=True, subject=subject or unknown)])
 
 
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -463,6 +497,10 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     is_pdf = _is_pdf(name, mime)
     split = _asks_topics(message.caption)
+    caption_subject = None
+    if split:
+        subject, _, unknown = _split_semester((message.caption or "")[len(SEMESTER):], _all_subjects(services(context)))
+        caption_subject = subject or unknown
     is_text = (name or "").lower().endswith(TEXT_EXTENSIONS) or (mime or "").startswith("text/plain")
     # While a download runs, nobody flushes the batch: the file may belong to it.
     data = context.user_data
@@ -490,12 +528,12 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except NoTextError:
             await reply(message, f"{ui.e('warning')} В PDF нет текста, похоже, это скан. Пришлите текст или запись.")
         else:
-            data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=text, split=split), name or "PDF"))
+            data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=text, split=split, subject=caption_subject), name or "PDF"))
     elif is_text:
-        data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=_decode(body), split=split), name or "Текст"))
+        data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=_decode(body), split=split, subject=caption_subject), name or "Текст"))
     elif not message.document or is_media(name, mime) or sniff(body if body is not None else _head(path)):
         # A document without a telling name or type may still be a recording: the header decides.
-        source = Source(audio=body, name=name, mime=mime, path=path, split=split)
+        source = Source(audio=body, name=name, mime=mime, path=path, split=split, subject=caption_subject)
         data.setdefault("batch", []).append(Incoming(message.message_id, source, _describe(message, name)))
     else:
         await reply(message, f"{ui.e('warning')} Не понимаю этот файл. Пришлите аудио, видео или текст в формате .txt.")
@@ -621,6 +659,11 @@ async def _run_job(
     if model is None:
         await reply(message, no_key_text(ui))
         return
+    for item in sources:
+        if item.subject and await _direct_target(context.bot, s, user_id, item.subject) is None:
+            await reply(message, f"{ui.e('warning')} Раздела «{html(item.subject)}» нет в группах, где вы состоите. "
+                                 "Проверьте название или /topics.")
+            return
     if options.daily_limit and not s.is_admin(user_id) and s.state.notes_last_day(user_id) >= options.daily_limit:
         await reply(message, f"{ui.e('speed')} Лимит: {options.daily_limit} конспектов за сутки. Попробуйте позже.")
         return
@@ -688,9 +731,22 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
     if len(results) > 1:
         notes.append(f"{len(results)} конспектов по темам")
     await _status(status, f"{ui.e('done')} Конспект готов" + (f" ({', '.join(notes)})" if notes else ""))
+    subject = next((item.subject for item in sources if item.subject), None)
+    target = await _direct_target(bot, s, user_id, subject) if subject else None
     for result in results:
         await _send(message, result)
-        await _offer_topics(message, bot, s, user_id, result)
+        if subject is None:
+            await _offer_topics(message, bot, s, user_id, result)
+        elif target is not None:
+            chat_id, thread_id, _ = target
+            try:
+                await _post_to_topic(bot, chat_id, thread_id, _group_result(s, user_id, result))
+            except TelegramError:
+                log.exception("Could not post a semester note to topic %s of chat %s", thread_id, chat_id)
+                await message.reply_text(f"{ui.e('warning')} Не получилось отправить один из конспектов в раздел "
+                                         f"«{html(subject)}». Проверьте, что бот в группе и раздел не удалён.")
+    if subject is not None and target is not None:
+        await _status(status, f"{ui.e('done')} Конспекты отправлены в раздел «{html(subject)}»: {len(results)}")
 
 
 async def _status(status: Message, text: str) -> None:
