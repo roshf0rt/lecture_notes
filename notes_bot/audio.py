@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import shutil
 import tempfile
 from pathlib import Path
@@ -222,15 +223,17 @@ async def find_pauses(data: bytes, extension: str) -> list[float]:
 
 
 def plan_cuts(duration: float, pauses: list[float], max_piece: float) -> list[float]:
-    """Where to cut a long recording: into the fewest equal pieces no longer than max_piece.
+    """Where to cut a long recording so that no piece is longer than max_piece.
 
-    Each cut moves to the nearest pause within a quarter of a piece, so a word is not split.
+    The number of pieces is the smallest that fits, ceil(duration / max_piece), and the pieces are equal.
+    Equal pieces leave slack = max_piece - piece. A cut may move to a pause by at most half of that slack
+    (and a quarter of a piece), so that a piece, whose two ends can both move, still stays within max_piece.
     """
     if duration <= max_piece:
         return []
-    count = -(-int(duration) // int(max_piece))  # rounded up
+    count = math.ceil(duration / max_piece)
     piece = duration / count
-    reach = piece / 4
+    reach = min(piece / 4, (max_piece - piece) / 2)
     cuts: list[float] = []
     for number in range(1, count):
         target = number * piece

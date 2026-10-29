@@ -121,6 +121,31 @@ def test_a_cut_moves_to_the_nearest_pause_near_the_even_split():
     assert plan_cuts(17 * 60, [100.0, 900.0], MAX_PIECE) == [pytest.approx(510.0)]  # no pause close enough
 
 
+def test_a_cut_does_not_move_when_the_pieces_already_fill_the_limit():
+    # 30 minutes in two pieces of exactly 15: there is no slack, so a pause nearby changes nothing.
+    assert plan_cuts(30 * 60, [880.0], MAX_PIECE) == [pytest.approx(900.0)]
+
+
+def test_a_recording_just_over_the_limit_still_gets_cut():
+    assert len(plan_cuts(900.5, [], MAX_PIECE)) == 1
+
+
+def test_no_piece_is_ever_longer_than_the_limit_and_the_count_is_the_smallest():
+    import math
+    import random
+
+    generator = random.Random(7)
+    for _ in range(300):
+        duration = generator.uniform(MAX_PIECE + 0.1, 4 * 3600)
+        pauses = sorted(generator.uniform(0, duration) for _ in range(generator.randint(0, 60)))
+        cuts = plan_cuts(duration, pauses, MAX_PIECE)
+        edges = [0.0, *cuts, duration]
+        lengths = [end - start for start, end in zip(edges, edges[1:])]
+        assert len(lengths) == math.ceil(duration / MAX_PIECE)
+        assert max(lengths) <= MAX_PIECE + 1e-6, (duration, lengths)
+        assert min(lengths) > 0
+
+
 def test_ninety_minutes_are_six_equal_pieces():
     cuts = plan_cuts(90 * 60, [], MAX_PIECE)
     assert len(cuts) == 5
