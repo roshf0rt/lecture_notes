@@ -94,3 +94,22 @@ def test_no_note_is_made_from_a_junk_transcript():
     with pytest.raises(GeminiError, match="Расшифровка не получилась"):
         asyncio.run(NotesPipeline(JunkModel()).run(
             UserSettings(), progress=progress, sources=[Source(audio=b"OggS" + b"\x00" * 60, name="v.ogg")]))
+
+
+def test_the_model_reports_when_a_gateway_key_recognised_the_speech():
+    from notes_bot.gemini import QUOTA
+
+    class QuotaGoogle(ScriptedClient):
+        async def transcribe(self, audio, filename):
+            if self.key == GOOGLE_KEY:
+                raise GeminiError("limit", QUOTA)
+            return await super().transcribe(audio, filename)
+
+    model = RotatingModel([GOOGLE_KEY, GATEWAY_KEY], lambda key: QuotaGoogle(key, []), KeyRing())
+    assert model.gateway_transcribed is False
+    asyncio.run(model.transcribe(b"", "x.ogg"))
+    assert model.gateway_transcribed is True
+
+    quiet = RotatingModel([GOOGLE_KEY], lambda key: ScriptedClient(key, []), KeyRing())
+    asyncio.run(quiet.transcribe(b"", "x.ogg"))
+    assert quiet.gateway_transcribed is False

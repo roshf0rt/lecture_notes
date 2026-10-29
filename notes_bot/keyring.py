@@ -104,6 +104,8 @@ class RotatingModel:
         self._ring = ring
         self._sleep = sleep
         self._clients: dict[str, Model] = {}
+        # Set once a gateway key has done the speech recognition, so the user can be told.
+        self.gateway_transcribed = False
 
     def _client(self, api_key: str) -> Model:
         if api_key not in self._clients:
@@ -114,6 +116,7 @@ class RotatingModel:
         last: GeminiError | None = None
         for api_key in keys if keys is not None else self._ring.order(self._keys):
             for attempt in range(OVERLOAD_RETRIES + 1):
+                self._current_key = api_key
                 try:
                     result = await action(self._client(api_key))
                 except GeminiError as error:
@@ -148,7 +151,18 @@ class RotatingModel:
         return [*self._ring.order(google), *self._ring.order(resold)]
 
     async def transcribe(self, audio: bytes, filename: str) -> str:
-        return await self._call(lambda client: client.transcribe(audio, filename), self._audio_keys())
+        used: list[str] = []
+
+        async def action(client: Model) -> str:
+            text = await client.transcribe(audio, filename)
+            used.append(self._current_key)
+            return text
+
+        text = await self._call(action, self._audio_keys())
+        if used and is_gateway_key(used[-1]):
+            self.gateway_transcribed = True
+            log.info("Speech was recognised by a gateway key")
+        return text
 
     async def write(self, transcript: str, enabled: tuple[str, ...], length_id: str, language: str = "auto") -> NoteDocument:
         return await self._call(lambda client: client.write(transcript, enabled, length_id, language))

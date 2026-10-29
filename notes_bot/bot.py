@@ -588,7 +588,12 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
             return
 
     s.state.log_job(user_id, kind, True, time.monotonic() - started)
-    await _status(status, f"{ui.e('done')} Конспект готов" + (" (на общем ключе)" if source == SHARED else ""))
+    notes = []
+    if source == SHARED:
+        notes.append("на общем ключе")
+    if getattr(model, "gateway_transcribed", False):
+        notes.append("запись расшифрована через поставщика ключа")
+    await _status(status, f"{ui.e('done')} Конспект готов" + (f" ({', '.join(notes)})" if notes else ""))
     await _send(message, result, settings, from_audio)
 
 
