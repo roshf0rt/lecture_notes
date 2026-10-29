@@ -928,3 +928,25 @@ def test_no_offer_without_bound_topics(tmp_path):
     h.services.keys.add(5, KEY)
     message = h.text(5, LONG_TEXT)
     assert not any("Отправить этот конспект" in reply.get("text", "") for reply in message.replies)
+
+
+def test_another_user_cannot_post_someone_elses_note(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    _bind(h, 5, "Лекция", 4)
+    message = h.text(5, LONG_TEXT)
+    offer = next(reply for reply in message.replies if "Отправить этот конспект" in reply.get("text", ""))
+    token = offer["reply_markup"].inline_keyboard[0][0].callback_data.split(":")[1]
+    h.tap(6, f"tp:{token}:0", on_topic_button)  # user 6 tries to tap user 5's button
+    assert not h.bot.topic_messages and not h.bot.documents
+    assert h.services.posts  # the offer is still waiting for its owner
+    h.tap(5, f"tp:{token}:0", on_topic_button)
+    assert h.bot.documents == [(-1001234, 4, "Лекция.pdf")]
+
+
+def test_each_user_sees_only_their_own_topics(tmp_path):
+    h = Harness(tmp_path)
+    _bind(h, 5, "Физика", 10, chat_id=-100)
+    _bind(h, 6, "Физика", 20, chat_id=-200)
+    assert h.services.state.topics(5) == [("Физика", -100, 10)]
+    assert h.services.state.topics(6) == [("Физика", -200, 20)]
