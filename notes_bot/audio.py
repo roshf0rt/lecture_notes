@@ -188,8 +188,64 @@ async def duration_seconds(data: bytes, extension: str) -> float:
             return 0.0
 
 
-async def split_mp3(data: bytes, extension: str, seconds: int) -> list[bytes]:
-    """Cut the recording into MP3 pieces of about `seconds` each, in order."""
+PAUSE_NOISE = "-35dB"
+PAUSE_MIN_SECONDS = 0.4
+MIN_PIECE_SECONDS = 20.0
+
+
+async def find_pauses(data: bytes, extension: str) -> list[float]:
+    """Moments of silence in the recording (the middle of each pause), in seconds. Empty when ffmpeg cannot tell."""
+    with tempfile.TemporaryDirectory(prefix="notes-bot-") as folder:
+        source = Path(folder) / f"input{extension}"
+        source.write_bytes(data)
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-nostdin", "-hide_banner", "-nostats", "-i", str(source), "-vn",
+            "-af", f"silencedetect=noise={PAUSE_NOISE}:d={PAUSE_MIN_SECONDS}", "-f", "null", "-",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(process.communicate(), CONVERT_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            return []
+        pauses: list[float] = []
+        start: float | None = None
+        for line in stderr.decode(errors="replace").splitlines():
+            if "silence_start:" in line:
+                start = float(line.rsplit("silence_start:", 1)[1].split()[0])
+            elif "silence_end:" in line and start is not None:
+                end = float(line.rsplit("silence_end:", 1)[1].split()[0])
+                pauses.append((start + end) / 2)
+                start = None
+        return pauses
+
+
+def plan_cuts(duration: float, pauses: list[float], max_piece: float) -> list[float]:
+    """Where to cut a long recording: into the fewest equal pieces no longer than max_piece.
+
+    Each cut moves to the nearest pause within a quarter of a piece, so a word is not split.
+    """
+    if duration <= max_piece:
+        return []
+    count = -(-int(duration) // int(max_piece))  # rounded up
+    piece = duration / count
+    reach = piece / 4
+    cuts: list[float] = []
+    for number in range(1, count):
+        target = number * piece
+        near = [pause for pause in pauses if abs(pause - target) <= reach]
+        cut = min(near, key=lambda pause: abs(pause - target)) if near else target
+        if cuts and cut - cuts[-1] < MIN_PIECE_SECONDS:
+            cut = target
+        cuts.append(cut)
+    return cuts
+
+
+async def split_mp3(data: bytes, extension: str, cuts: list[float]) -> list[bytes]:
+    """Cut the recording at the given moments (seconds) into MP3 pieces, in order."""
+    if not cuts:
+        return [await to_mp3(data, extension)]
     with tempfile.TemporaryDirectory(prefix="notes-bot-") as folder:
         source = Path(folder) / f"input{extension}"
         source.write_bytes(data)
@@ -197,7 +253,8 @@ async def split_mp3(data: bytes, extension: str, seconds: int) -> list[bytes]:
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k",
-            "-f", "segment", "-segment_time", str(seconds), str(pattern),
+            "-f", "segment", "-segment_times", ",".join(f"{cut:.2f}" for cut in cuts), "-reset_timestamps", "1",
+            str(pattern),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )

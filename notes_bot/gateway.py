@@ -13,7 +13,16 @@ import re
 
 import httpx
 
-from .audio import AudioError, canonical_extension, duration_seconds, ffmpeg_available, split_mp3, to_mp3
+from .audio import (
+    AudioError,
+    canonical_extension,
+    duration_seconds,
+    ffmpeg_available,
+    find_pauses,
+    plan_cuts,
+    split_mp3,
+    to_mp3,
+)
 from .gemini import AUTH, MODEL, OTHER, OVERLOADED, QUOTA, TRANSCRIBE_PROMPT, UNREACHABLE, GeminiError
 from .notes import SYSTEM_PROMPT, NoteDocument, build_user_message, note_schema
 
@@ -21,9 +30,8 @@ log = logging.getLogger(__name__)
 
 GATEWAY_URL = "https://api.aikeysforyou.com/v1"
 MAX_OUTPUT_TOKENS = 16_000
-# Recordings longer than this are cut into pieces of SEGMENT_SECONDS; the supplier is slow on long audio.
-CUT_AFTER_SECONDS = 15 * 60
-SEGMENT_SECONDS = 15 * 60
+# Recordings longer than MAX_PIECE_SECONDS are cut into the fewest equal pieces, at pauses in the speech.
+MAX_PIECE_SECONDS = 15 * 60
 REQUEST_TIMEOUT = 300.0
 BAD_FORMAT = "Конспект получился в неверном формате. Попробуйте ещё раз."
 
@@ -143,9 +151,10 @@ class GatewayClient:
         extension = canonical_extension(filename) or ".ogg"
         # Every piece goes out as MP3, the audio format the supplier takes; long recordings are cut first.
         try:
-            long_recording = ffmpeg_available() and await duration_seconds(audio, extension) > CUT_AFTER_SECONDS
-            if long_recording:
-                pieces = await split_mp3(audio, extension, SEGMENT_SECONDS)
+            duration = await duration_seconds(audio, extension) if ffmpeg_available() else 0.0
+            if duration > MAX_PIECE_SECONDS:
+                cuts = plan_cuts(duration, await find_pauses(audio, extension), MAX_PIECE_SECONDS)
+                pieces = await split_mp3(audio, extension, cuts)
             elif extension == ".mp3":
                 pieces = [audio]
             else:

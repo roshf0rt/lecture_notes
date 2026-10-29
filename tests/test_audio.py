@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from notes_bot.audio import AudioError, canonical_extension, detect, is_media, prepare, sniff
+from notes_bot.audio import AudioError, canonical_extension, detect, find_pauses, is_media, plan_cuts, prepare, sniff, split_mp3
 
 LIMIT = 12 * 1024 * 1024
 
@@ -101,3 +101,57 @@ def test_big_file_on_disk_is_converted_without_being_loaded(tmp_path):
                     "-ac", "2", str(source)], check=True)
     data, name = asyncio.run(prepare(None, None, None, inline_limit=1000, path=source))  # "big" = over the inline limit
     assert name == "audio.ogg" and data.startswith(b"OggS") and len(data) < source.stat().st_size / 5
+
+
+MAX_PIECE = 15 * 60
+
+
+def test_a_short_recording_is_not_cut():
+    assert plan_cuts(14 * 60, [300.0], MAX_PIECE) == []
+    assert plan_cuts(MAX_PIECE, [], MAX_PIECE) == []
+
+
+def test_seventeen_minutes_make_two_equal_halves_not_fifteen_and_two():
+    cuts = plan_cuts(17 * 60, [], MAX_PIECE)
+    assert cuts == [pytest.approx(510.0)]
+
+
+def test_a_cut_moves_to_the_nearest_pause_near_the_even_split():
+    assert plan_cuts(17 * 60, [100.0, 530.0, 900.0], MAX_PIECE) == [530.0]
+    assert plan_cuts(17 * 60, [100.0, 900.0], MAX_PIECE) == [pytest.approx(510.0)]  # no pause close enough
+
+
+def test_ninety_minutes_are_six_equal_pieces():
+    cuts = plan_cuts(90 * 60, [], MAX_PIECE)
+    assert len(cuts) == 5
+    assert cuts[0] == pytest.approx(900.0) and cuts[-1] == pytest.approx(4500.0)
+
+
+def test_cuts_never_pile_up_on_the_same_pause():
+    cuts = plan_cuts(31 * 60, [930.0, 931.0], MAX_PIECE)
+    assert len(cuts) == 2 and cuts[1] - cuts[0] >= 20
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_a_pause_in_the_speech_is_found():
+    wav = subprocess.run(
+        ["ffmpeg", "-loglevel", "error",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=16000",
+         "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono:d=1",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=16000",
+         "-filter_complex", "[0][1][2]concat=n=3:v=0:a=1", "-f", "wav", "pipe:1"],
+        check=True, capture_output=True,
+    ).stdout
+    pauses = asyncio.run(find_pauses(wav, ".wav"))
+    assert len(pauses) == 1 and 2.0 <= pauses[0] <= 3.0
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_split_at_the_planned_moments_gives_one_piece_per_part():
+    wav = subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=6:sample_rate=16000",
+         "-f", "wav", "pipe:1"],
+        check=True, capture_output=True,
+    ).stdout
+    assert len(asyncio.run(split_mp3(wav, ".wav", [2.0, 4.0]))) == 3
+    assert len(asyncio.run(split_mp3(wav, ".wav", []))) == 1

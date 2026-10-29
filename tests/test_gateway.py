@@ -128,8 +128,7 @@ def test_supplier_reason_is_shown_without_the_key():
 def test_long_recording_is_cut_and_the_pieces_are_joined_in_order(monkeypatch):
     import notes_bot.gateway as gateway
 
-    monkeypatch.setattr(gateway, "CUT_AFTER_SECONDS", 1)
-    monkeypatch.setattr(gateway, "SEGMENT_SECONDS", 1)
+    monkeypatch.setattr(gateway, "MAX_PIECE_SECONDS", 1)
     wav = subprocess.run(
         ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-f", "wav", "pipe:1"],
         check=True, capture_output=True,
