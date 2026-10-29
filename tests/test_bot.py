@@ -1039,8 +1039,68 @@ def test_semester_on_a_long_text_runs_through_the_bot_and_reports_progress(tmp_p
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
     long_text = "\n".join(f"Абзац номер {n} о теме {n // 50}, с тремя словами и числом {n * 7}." for n in range(3000))
-    message = FakeMessage(text=f"/semester\n{long_text}")
+    _bind(h, 5, "Физика", 9)
+    message = FakeMessage(text=f"/semester\nФизика\n{long_text}")
     h.run(on_semester, 5, message=message)
-    assert "Конспект готов" in message.edits[-1] or "Конспект готов" in " ".join(message.edits)
     assert [call for call in h.calls if call[0] == "write"]
     assert not any("Не получилось" in text for text in message.edits)
+
+
+def _semester_buttons(message):
+    return next(reply for reply in message.replies if "В какой раздел" in reply.get("text", ""))
+
+
+def _tap_semester(h, user_id, index_or_choice, prompt):
+    """Tap a button of the question `prompt` (the message the bot sent with the buttons)."""
+    from notes_bot.bot import on_semester_button
+
+    token = prompt["reply_markup"].inline_keyboard[0][0].callback_data.split(":")[1]
+    query = FakeQuery(f"sm:{token}:{index_or_choice}", user_id)
+    query.message = FakeMessage(message_id=50)
+    h.run(on_semester_button, user_id, query=query, message=query.message)
+
+
+def test_semestr_alone_lists_the_subjects_of_my_groups_and_waits_for_the_text(tmp_path):
+    from notes_bot.bot import on_semester
+
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    _bind(h, 5, "Химия", 3)
+    _bind(h, 5, "Физика", 4)
+    message = FakeMessage(text="/semestr")
+    h.run(on_semester, 5, message=message)
+    labels = [button.text for row in _semester_buttons(message)["reply_markup"].inline_keyboard for button in row]
+    assert labels[:2] == ["Физика", "Химия"] and "Без раздела" in labels and "Отмена" in labels
+    assert not [call for call in h.calls if call[0] == "write"]
+    _tap_semester(h, 5, 0, _semester_buttons(message))  # Физика
+    assert h.user_data[5]["semester"][0] == "Физика"
+    h.text(5, LONG_TEXT)  # the next text is the semester material
+    assert h.bot.documents == [(-1001234, 4, "Лекция.pdf")]
+    assert "semester" not in h.user_data[5]
+
+
+def test_semestr_with_text_asks_then_uses_the_text_already_sent(tmp_path):
+    from notes_bot.bot import on_semester
+
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    _bind(h, 5, "Физика", 4)
+    message = FakeMessage(text=f"/semestr {LONG_TEXT}")
+    h.run(on_semester, 5, message=message)
+    assert not [call for call in h.calls if call[0] == "write"]
+    _tap_semester(h, 5, 0, _semester_buttons(message))
+    assert h.bot.documents == [(-1001234, 4, "Лекция.pdf")]
+
+
+def test_without_a_subject_the_notes_are_offered_as_usual(tmp_path):
+    from notes_bot.bot import on_semester
+
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    _bind(h, 5, "Физика", 4)
+    message = FakeMessage(text="/semestr")
+    h.run(on_semester, 5, message=message)
+    _tap_semester(h, 5, "n", _semester_buttons(message))  # Без раздела
+    sent = h.text(5, LONG_TEXT)
+    assert not h.bot.documents  # nothing goes to the group without a tap
+    assert any("Отправить этот конспект" in reply.get("text", "") for reply in sent.replies)

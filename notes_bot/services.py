@@ -42,6 +42,8 @@ class Services:
     slots: asyncio.Semaphore | None = None
     # Notes waiting for the user to pick a group topic, by token.
     posts: dict = field(default_factory=dict)
+    # /semester subject questions waiting for a tap, by token.
+    semesters: dict = field(default_factory=dict)
     # Whether a user is in a group, by (group, user): (checked at, answer).
     membership: dict = field(default_factory=dict)
 

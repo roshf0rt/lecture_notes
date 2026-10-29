@@ -347,6 +347,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if found and not KEY_PATTERN.sub("", text).strip():
         await _save_keys(update, context, found)
         return
+    chosen = context.user_data.pop("semester", None)
+    if chosen is not None and time.time() - chosen[1] < SEMESTER_WAIT:
+        if not await _agreed(update, context):
+            return
+        await _run_job(update, context, [Source(text=text, split=True, subject=chosen[0])])
+        return
     if not await _agreed(update, context):
         return
     await _run_job(update, context, [Source(text=text)])
@@ -422,11 +428,20 @@ def _head(path: Path) -> bytes:
 
 
 SEMESTER = "/semester"
+SEMESTER_COMMANDS = ("semester", "semestr")
+SEMESTER_RE = re.compile(r"^/semest(?:er|r)(@\S+)?", re.IGNORECASE)
+SEMESTER_WAIT = 600  # seconds the bot waits for the text or file after a subject was chosen
+
+
+def _semester_body(text: str | None) -> str | None:
+    """What follows /semester or /semestr, or None if the text is not that command."""
+    match = SEMESTER_RE.match((text or "").strip())
+    return None if match is None else (text or "").strip()[match.end():]
 
 
 def _asks_topics(text: str | None) -> bool:
     """/semester at the start of a text or a file's caption: one note per topic, however long the material is."""
-    return (text or "").strip().lower().startswith(SEMESTER)
+    return _semester_body(text) is not None
 
 
 def _all_subjects(s: Services) -> list[str]:
@@ -463,15 +478,81 @@ async def on_semester(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """/semester [предмет] и текст: конспект на каждую тему. С предметом все они уходят в его раздел."""
     message = update.effective_message
     s = services(context)
-    body = re.sub(r"^/semester(@\S+)?", "", message.text or "", count=1)
+    body = _semester_body(message.text) or ""
     subject, text, unknown = _split_semester(body, _all_subjects(s))
-    if not text and unknown is None:
-        await reply(message, f"Напишите <code>{SEMESTER}</code>, с новой строки название предмета (если нужно), "
-                             "а дальше текст лекций. Можно и файлом с такой подписью.")
+    if subject is not None and text:
+        # The subject is on its first line and the text follows: no question needed.
+        if not await _agreed(update, context):
+            return
+        await _run_job(update, context, [Source(text=text, split=True, subject=subject)])
         return
-    if not await _agreed(update, context):
+    # Otherwise ask which subject, then take the text or file that follows (or the text already sent).
+    note = f"Раздела «{html(unknown)}» нет среди ваших групп. " if unknown else ""
+    await _ask_semester_subject(message, context, update.effective_user.id, text if subject is None and text else "",
+                                note=note)
+
+
+async def _ask_semester_subject(message: Message, context: ContextTypes.DEFAULT_TYPE, user_id: int, text: str,
+                                sources: list[Source] | None = None, note: str = "") -> None:
+    """Buttons with the subjects of the user's groups. The choice applies to `text` or to `sources` if given,
+    otherwise to the next text or file the user sends."""
+    s = services(context)
+    ui = s.ui()
+    subjects = await _member_subjects(context.bot, s, user_id)
+    if not subjects:
+        await reply(message, "Пока нет групп с разделами, где вы состоите. Сначала привяжите разделы командой /bind.")
         return
-    await _run_job(update, context, [Source(text=text, split=True, subject=subject or unknown)])
+    now = time.time()
+    s.semesters = {key: ask for key, ask in s.semesters.items() if now - ask.created < POST_TTL}
+    token = secrets.token_hex(4)
+    pending = list(sources or ([Source(text=text, split=True)] if text else []))
+    s.semesters[token] = SemesterAsk(now, user_id, pending, [subject for subject, _, _ in subjects])
+    rows = [[ui.button("list", subject, f"sm:{token}:{index}")] for index, (subject, _, _) in enumerate(subjects)]
+    rows.append([ui.button("no", "Без раздела", f"sm:{token}:n")])
+    rows.append([ui.button("no", "Отмена", f"sm:{token}:x")])
+    await reply(message, f"{note}{ui.e('list')} <b>В какой раздел положить конспекты по темам?</b>",
+                InlineKeyboardMarkup(rows))
+
+
+async def _member_subjects(bot, s: Services, user_id: int | None) -> list[tuple[str, int, int]]:
+    """(subject, chat id, topic id) for every subject the user can post to, sorted by name."""
+    found = []
+    if user_id is None:
+        return found
+    for chat_id, _, topics in s.state.groups_with_topics():
+        if await _is_member(bot, s, chat_id, user_id):
+            found.extend((subject, chat_id, thread_id) for subject, thread_id in topics)
+    return sorted(found, key=lambda item: item[0].lower())
+
+
+async def on_semester_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    s = services(context)
+    ui = s.ui()
+    _, token, choice = query.data.split(":")
+    ask: SemesterAsk | None = s.semesters.get(token)
+    if ask is None or ask.user_id != query.from_user.id:
+        await query.answer("Этот вопрос устарел", show_alert=True)
+        await edit(query, f"{ui.e('info')} Этот вопрос устарел. Пришлите /semestr ещё раз.")
+        return
+    if choice == "x":
+        s.semesters.pop(token, None)
+        await query.answer()
+        await edit(query, f"{ui.e('no')} Отменено.")
+        return
+    subject = None if choice == "n" else ask.subjects[int(choice)]
+    await query.answer()
+    if ask.sources:
+        s.semesters.pop(token, None)
+        sources = [replace(source, subject=subject, split=True) for source in ask.sources]
+        await edit(query, f"{ui.e('list')} Делаю конспекты по темам"
+                          + (f" в раздел «{html(subject)}»." if subject else "."))
+        await _run_job(update, context, sources)
+        return
+    s.semesters.pop(token, None)
+    context.user_data["semester"] = (subject, time.time())
+    where = f" в раздел «{html(subject)}»" if subject else ""
+    await edit(query, f"{ui.e('list')} Пришлите текст лекций или файл{where}.")
 
 
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -496,10 +577,13 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     is_pdf = _is_pdf(name, mime)
-    split = _asks_topics(message.caption)
+    chosen = context.user_data.pop("semester", None)
+    split = _asks_topics(message.caption) or (chosen is not None and time.time() - chosen[1] < SEMESTER_WAIT)
     caption_subject = None
-    if split:
-        subject, _, unknown = _split_semester((message.caption or "")[len(SEMESTER):], _all_subjects(services(context)))
+    if chosen is not None and time.time() - chosen[1] < SEMESTER_WAIT:
+        caption_subject = chosen[0]
+    elif split:
+        subject, _, unknown = _split_semester(_semester_body(message.caption) or "", _all_subjects(services(context)))
         caption_subject = subject or unknown
     is_text = (name or "").lower().endswith(TEXT_EXTENSIONS) or (mime or "").startswith("text/plain")
     # While a download runs, nobody flushes the batch: the file may belong to it.
@@ -770,6 +854,16 @@ MEMBER_STATUSES = ("creator", "administrator", "member", "restricted")
 
 
 @dataclass(frozen=True)
+class SemesterAsk:
+    """A /semester question waiting for the user to choose a subject. `sources` is empty if the text is still to come."""
+
+    created: float
+    user_id: int | None
+    sources: list
+    subjects: list[str]
+
+
+@dataclass(frozen=True)
 class Post:
     created: float
     user_id: int
@@ -1020,7 +1114,8 @@ def build_application(config: Config) -> Application:
     application.add_handler(CommandHandler("bind", on_bind))
     application.add_handler(CommandHandler("unbind", on_unbind))
     application.add_handler(CommandHandler("topics", on_topics))
-    application.add_handler(CommandHandler("semester", on_semester, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler(list(SEMESTER_COMMANDS), on_semester, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CallbackQueryHandler(on_semester_button, pattern=r"^sm:"))
     application.add_handler(CallbackQueryHandler(admin.on_admin_button, pattern=r"^ad:"))
     application.add_handler(
         MessageHandler(
