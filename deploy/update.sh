@@ -34,10 +34,19 @@ if [ "$OLD" = "$NEW" ]; then
   exit 0
 fi
 
-# A recording being converted right now would be cut off by a restart. Try again in ten minutes.
-if pgrep -x ffmpeg >/dev/null; then
-  echo "A recording is being converted; the update waits for the next run."
-  notify "Сейчас конвертируется запись, обновление отложено. Нажмите кнопку ещё раз через пару минут."
+# A note being made right now would be cut off by a restart. The bot writes how many are running into
+# active.jobs (a stale file older than four hours is ignored); the timer tries again in ten minutes.
+ACTIVE="$DATA_DIR/active.jobs"
+busy() {
+  if pgrep -x ffmpeg >/dev/null; then return 0; fi
+  if [ -f "$ACTIVE" ] && [ "$(cat "$ACTIVE" 2>/dev/null || echo 0)" != "0" ] && [ -n "$(find "$ACTIVE" -mmin -240 2>/dev/null)" ]; then
+    return 0
+  fi
+  return 1
+}
+if busy; then
+  echo "Notes are being made; the update waits for the next run."
+  notify "Сейчас делаются конспекты, обновление отложено. Оно применится само, когда бот освободится (проверка раз в 10 минут)."
   exit 0
 fi
 

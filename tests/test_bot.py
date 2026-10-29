@@ -698,3 +698,26 @@ def test_only_admins_can_request_an_update(tmp_path):
     query = h.tap(1, "ad:update", admin.on_admin_button)
     assert query.answers == ["Только для админов"]
     assert not (tmp_path / "update.request").exists()
+
+
+def test_the_updater_is_told_how_many_notes_are_running(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(3, KEY)
+    seen = []
+    original = h.services.make_client
+
+    def make_client(api_key, model):
+        client = original(api_key, model)
+        write = client.write
+
+        async def watching_write(*args, **kwargs):
+            seen.append((tmp_path / "active.jobs").read_text())
+            return await write(*args, **kwargs)
+
+        client.write = watching_write
+        return client
+
+    h.services.make_client = make_client
+    h.text(3, LONG_TEXT)
+    assert seen == ["1"]
+    assert (tmp_path / "active.jobs").read_text() == "0"

@@ -24,6 +24,7 @@ from .audio import (
     to_mp3,
 )
 from .gemini import AUTH, MODEL, OTHER, OVERLOADED, QUOTA, TRANSCRIBE_PROMPT, UNREACHABLE, GeminiError
+from .transcript import junk_reason
 from .notes import SYSTEM_PROMPT, NoteDocument, build_user_message, note_schema
 
 log = logging.getLogger(__name__)
@@ -165,6 +166,10 @@ class GatewayClient:
         text = "\n\n".join(part for part in texts if part)
         if not text:
             raise GeminiError("В записи не нашлось речи.")
+        reason = junk_reason(text)
+        if reason:
+            # The gateway did not pass the audio to the model. Another key may do better.
+            raise GeminiError(f"Поставщик ключа не распознал аудио: {reason}.", MODEL)
         return text
 
     async def _transcribe_piece(self, data: bytes) -> str:

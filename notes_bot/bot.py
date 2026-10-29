@@ -549,6 +549,7 @@ async def _run_job(
         await reply(message, f"{ui.e('clock')} У вас уже в очереди {_notes(ahead)}. Дождитесь, пожалуйста, их.")
         return
     s.queued[user_id] = ahead + 1
+    s.publish_active()
     try:
         status = await reply(message, _queue_text(ui, ahead, any(item.is_audio for item in sources)))
         lock = s.locks.setdefault(user_id, asyncio.Lock())
@@ -558,6 +559,7 @@ async def _run_job(
         s.queued[user_id] -= 1
         if s.queued[user_id] <= 0:
             s.queued.pop(user_id, None)
+        s.publish_active()
 
 
 async def _make_note(message, status, s, user_id, model, source, sources, ui, options) -> None:
@@ -620,6 +622,7 @@ async def _send(message: Message, result: Result, settings: UserSettings, from_a
 
 async def _post_init(application: Application) -> None:
     s: Services = application.bot_data["services"]
+    s.publish_active()  # a fresh start has no notes running
     try:
         await application.bot.set_my_commands(USER_COMMANDS, scope=BotCommandScopeDefault())
     except TelegramError:

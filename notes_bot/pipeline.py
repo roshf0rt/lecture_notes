@@ -11,6 +11,7 @@ from .blocks import ONE_MESSAGE_LENGTH_ID
 from .gemini import INLINE_LIMIT_BYTES, GeminiError
 from .notes import NoteDocument
 from .render_pdf import render_pdf
+from .transcript import junk_reason
 from .render_tg import fit_one_message, render_messages
 from .settings import UserSettings
 from .themes import get_theme
@@ -89,6 +90,9 @@ class NotesPipeline:
             else:
                 texts.append(source.text or "")
         text = _join(texts) if len(sources) > 1 else texts[0]
+        reason = junk_reason(text) if any(source.is_audio for source in sources) else None
+        if reason:
+            raise GeminiError(f"Расшифровка не получилась: {reason}. Попробуйте ещё раз или добавьте ключ Google.")
 
         if len(text.strip()) < MIN_TEXT_CHARS:
             raise GeminiError("В материале слишком мало текста для конспекта.")

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import TypeVar
 from zoneinfo import ZoneInfo
 
+from .keys import is_gateway_key
 from .gemini import AUTH, MODEL, OVERLOADED, QUOTA, UNREACHABLE, GeminiError
 from .notes import NoteDocument
 from .pipeline import Model
@@ -109,9 +110,9 @@ class RotatingModel:
             self._clients[api_key] = self._make_client(api_key)
         return self._clients[api_key]
 
-    async def _call(self, action: Callable[[Model], Awaitable[T]]) -> T:
+    async def _call(self, action: Callable[[Model], Awaitable[T]], keys: list[str] | None = None) -> T:
         last: GeminiError | None = None
-        for api_key in self._ring.order(self._keys):
+        for api_key in keys if keys is not None else self._ring.order(self._keys):
             for attempt in range(OVERLOAD_RETRIES + 1):
                 try:
                     result = await action(self._client(api_key))
@@ -139,8 +140,15 @@ class RotatingModel:
     async def check_key(self) -> None:
         await self._call(lambda client: client.check_key())
 
+    def _audio_keys(self) -> list[str]:
+        """Keys for speech: Google's first. A reseller's gateway does not really take audio (the model
+        answers as if no file came), so its keys are tried only when nothing else is left."""
+        google = [key for key in self._keys if not is_gateway_key(key)]
+        resold = [key for key in self._keys if is_gateway_key(key)]
+        return [*self._ring.order(google), *self._ring.order(resold)]
+
     async def transcribe(self, audio: bytes, filename: str) -> str:
-        return await self._call(lambda client: client.transcribe(audio, filename))
+        return await self._call(lambda client: client.transcribe(audio, filename), self._audio_keys())
 
     async def write(self, transcript: str, enabled: tuple[str, ...], length_id: str, language: str = "auto") -> NoteDocument:
         return await self._call(lambda client: client.write(transcript, enabled, length_id, language))

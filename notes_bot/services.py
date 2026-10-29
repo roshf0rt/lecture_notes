@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 # Keys come from the user, or from the admin's shared pool when that is switched on.
 OWN, SHARED = "own", "shared"
+ACTIVE_JOBS_FILE = "active.jobs"  # read by deploy/update.sh
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 
@@ -43,6 +44,13 @@ class Services:
     def __post_init__(self) -> None:
         if self.slots is None:
             self.slots = asyncio.Semaphore(self.config.max_parallel_jobs)
+
+    def publish_active(self) -> None:
+        """Tell the updater how many notes are being made, so a restart does not cut one off."""
+        try:
+            (self.config.data_dir / ACTIVE_JOBS_FILE).write_text(str(sum(self.queued.values())), encoding="utf-8")
+        except OSError:
+            log.warning("Could not write %s", ACTIVE_JOBS_FILE)
 
     def options(self) -> Options:
         return self.state.options()
