@@ -21,9 +21,9 @@ log = logging.getLogger(__name__)
 
 GATEWAY_URL = "https://api.aikeysforyou.com/v1"
 MAX_OUTPUT_TOKENS = 16_000
-# Recordings longer than this are cut; the supplier is slow on long audio and requests time out.
+# Recordings longer than this are cut into pieces of SEGMENT_SECONDS; the supplier is slow on long audio.
 CUT_AFTER_SECONDS = 15 * 60
-SEGMENT_SECONDS = 10 * 60
+SEGMENT_SECONDS = 15 * 60
 REQUEST_TIMEOUT = 300.0
 BAD_FORMAT = "Конспект получился в неверном формате. Попробуйте ещё раз."
 
