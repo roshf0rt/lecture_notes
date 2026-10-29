@@ -215,10 +215,9 @@ def test_block_toggle_presets_and_reset(tmp_path):
     assert "examples" in h.services.store.get(1).blocks
     h.tap(1, "st:preset:min", on_settings_button)
     assert h.services.store.get(1).blocks == ("main_idea", "concepts", "takeaways")
-    h.tap(1, "st:tr", on_settings_button)
     h.tap(1, "st:set:language:ru", on_settings_button)
     settings = h.services.store.get(1)
-    assert settings.send_transcript and settings.language == "ru"
+    assert settings.language == "ru"
     query = h.tap(1, "st:reset", on_settings_button)
     assert h.services.store.get(1) == UserSettings()
     assert "Настройки конспектов" in query.edited[-1][0]
@@ -352,14 +351,14 @@ def _answer(h, user_id, question, action):
 def test_merge_makes_one_note_from_all_parts_in_order(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
-    h.services.store.save(5, UserSettings(send_transcript=True))
+    h.services.store.save(5, UserSettings())
     question = _question(h, 5, _two_recordings())
     _, message = _answer(h, 5, question, "merge")
     assert [call[2] for call in h.calls if call[0] == "transcribe"] == ["audio.ogg", "audio.aac"]
     assert len([call for call in h.calls if call[0] == "write"]) == 1
     files = [reply["filename"] for reply in message.replies if "document" in reply]
-    assert files == ["Лекция.pdf", "Лекция — расшифровка.txt"]
-    transcript = next(reply["document"] for reply in message.replies if "document" in reply and "расшифровка" in reply["filename"])
+    assert files == ["Расшифровка.txt", "Лекция.pdf"]
+    transcript = next(reply["document"] for reply in message.replies if "document" in reply and "Расшифровка" in reply["filename"])
     assert transcript.decode().startswith("[Часть 1 из 2]")
     assert any("1 из 2" in text for text in message.edits)
 
@@ -370,7 +369,8 @@ def test_split_makes_a_note_per_file(tmp_path):
     question = _question(h, 5, _two_recordings())
     _, message = _answer(h, 5, question, "split")
     assert len([call for call in h.calls if call[0] == "write"]) == 2
-    assert len([reply for reply in message.replies if "document" in reply]) == 2
+    files = [reply["filename"] for reply in message.replies if "document" in reply]
+    assert sorted(name.endswith(".pdf") for name in files) == [False, False, True, True]  # a transcript and a PDF each
 
 
 def test_cancel_and_stale_buttons(tmp_path):
@@ -414,13 +414,13 @@ def test_text_document_becomes_pdf(tmp_path):
 def test_aac_document_with_a_wrong_name_is_sent_as_aac(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
-    h.services.store.save(5, UserSettings(output="tg", send_transcript=True))
+    h.services.store.save(5, UserSettings(output="tg"))
     body = b"\xff\xf1\x50\x80" + b"\x00" * 200
     message = FakeMessage(document=_document(body, "recording", "application/octet-stream"))
     h.run(on_media, 5, message=message)
     assert ("transcribe", KEY, "audio.aac") in h.calls
     transcript = next(reply for reply in message.replies if "document" in reply)
-    assert transcript["filename"].endswith("расшифровка.txt")
+    assert transcript["filename"].startswith("Расшифровка")
 
 
 def test_second_key_takes_over_when_the_first_is_out_of_quota(tmp_path):
@@ -721,3 +721,13 @@ def test_the_updater_is_told_how_many_notes_are_running(tmp_path):
     h.text(3, LONG_TEXT)
     assert seen == ["1"]
     assert (tmp_path / "active.jobs").read_text() == "0"
+
+
+def test_transcript_file_arrives_even_when_writing_the_note_fails(tmp_path):
+    h = Harness(tmp_path, fail_write=GeminiError("Конспект получился в неверном формате. Попробуйте ещё раз."))
+    h.services.keys.add(5, KEY)
+    question = _question(h, 5, _two_recordings())
+    _, message = _answer(h, 5, question, "merge")
+    assert "неверном формате" in message.edits[-1]
+    files = [reply["filename"] for reply in message.replies if "document" in reply]
+    assert files == ["Расшифровка.txt"]

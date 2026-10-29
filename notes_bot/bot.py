@@ -196,8 +196,6 @@ async def on_settings_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif action == "preset" and args[0] in BLOCK_PRESETS:
         settings = replace(settings, blocks=BLOCK_PRESETS[args[0]])
         view = "blocks"
-    elif action == "tr":
-        settings = replace(settings, send_transcript=not settings.send_transcript)
     elif action == "reset":
         settings = UserSettings()
     s.store.save(user_id, settings)
@@ -569,6 +567,11 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
     async def progress(stage: str, detail: str = "") -> None:
         await _status(status, _stage(ui, stage, detail))
 
+    async def keep_transcript(text: str) -> None:
+        # Sent as soon as it exists, so a failure while writing the note still leaves the user with the text.
+        with suppress(TelegramError):
+            await message.reply_document(document=io.BytesIO(text.encode("utf-8")), filename=_transcript_name(sources))
+
     await _status(status, _stage(ui, "transcribing" if from_audio else "writing"))
     kind = "audio" if from_audio else "text"
     started = time.monotonic()
@@ -576,6 +579,7 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
         try:
             result = await NotesPipeline(model).run(
                 settings, progress=progress, sources=sources, premium=options.premium_emoji,
+                on_transcript=keep_transcript,
             )
         except GeminiError as error:
             s.state.log_job(user_id, kind, False, time.monotonic() - started, str(error))
@@ -594,7 +598,7 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
     if getattr(model, "gateway_transcribed", False):
         notes.append("запись расшифрована через поставщика ключа")
     await _status(status, f"{ui.e('done')} Конспект готов" + (f" ({', '.join(notes)})" if notes else ""))
-    await _send(message, result, settings, from_audio)
+    await _send(message, result)
 
 
 async def _status(status: Message, text: str) -> None:
@@ -602,12 +606,17 @@ async def _status(status: Message, text: str) -> None:
         await edit(status, text)
 
 
+def _transcript_name(sources) -> str:
+    names = [Path(item.name).stem for item in sources if item.is_audio and item.name]
+    return f"Расшифровка — {_file_name(names[0])}.txt" if len(names) == 1 else "Расшифровка.txt"
+
+
 def _file_name(title: str) -> str:
     cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", title).strip()
     return (cleaned or "Конспект")[:80]
 
 
-async def _send(message: Message, result: Result, settings: UserSettings, from_audio: bool) -> None:
+async def _send(message: Message, result: Result) -> None:
     name = _file_name(result.document.title)
     # The readable messages first, so the note is there at once; the PDF follows when both are asked for.
     for text in result.messages or []:
@@ -618,10 +627,6 @@ async def _send(message: Message, result: Result, settings: UserSettings, from_a
             await message.reply_text(plain_text(text))
     if result.pdf is not None:
         await message.reply_document(document=io.BytesIO(result.pdf), filename=f"{name}.pdf")
-    if settings.send_transcript and from_audio:
-        await message.reply_document(
-            document=io.BytesIO(result.transcript.encode("utf-8")), filename=f"{name} — расшифровка.txt"
-        )
 # --- application ------------------------------------------------------------------------
 
 

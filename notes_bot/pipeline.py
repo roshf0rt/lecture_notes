@@ -69,12 +69,14 @@ class NotesPipeline:
         audio_mime: str | None = None,
         sources: list[Source] | None = None,
         premium: bool = False,
+        on_transcript: Callable[[str], Awaitable[None]] | None = None,
     ) -> Result:
         """Make one note. Several sources are read in order and treated as parts of one lecture."""
         if sources is None:
             sources = [Source(text=text, audio=audio, name=audio_name, mime=audio_mime)]
         recordings = sum(source.is_audio for source in sources)
         texts: list[str] = []
+        spoken: list[str] = []  # what the recordings said, for the raw transcript file
         done = 0
         for source in sources:
             if source.is_audio:
@@ -82,6 +84,7 @@ class NotesPipeline:
                 await progress("transcribing", f"{done} из {recordings}" if recordings > 1 else "")
                 try:
                     texts.append(await self._transcribe(source))
+                    spoken.append(texts[-1])
                 except GeminiError as error:
                     if len(sources) > 1:
                         raise GeminiError(f"Файл {sources.index(source) + 1} ({source.name or 'запись'}): {error}",
@@ -93,6 +96,9 @@ class NotesPipeline:
         reason = junk_reason(text) if any(source.is_audio for source in sources) else None
         if reason:
             raise GeminiError(f"Расшифровка не получилась: {reason}. Попробуйте ещё раз или добавьте ключ Google.")
+
+        if spoken and on_transcript is not None:  # handed over before the note is written, so a failure later loses nothing
+            await on_transcript(_join(spoken) if len(spoken) > 1 else spoken[0])
 
         if len(text.strip()) < MIN_TEXT_CHARS:
             raise GeminiError("В материале слишком мало текста для конспекта.")

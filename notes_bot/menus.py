@@ -89,7 +89,7 @@ def help_text(ui: Ui, local_api: bool = False) -> str:
             f"{ui.e('transcript')} <b>Текст.</b> Сообщением или файлом .txt, от 100 знаков.",
             f"{ui.e('key')} <b>Ключи.</b> Можно добавить несколько ключей Gemini: когда у одного кончается лимит, "
             "бот переходит на следующий. Квота общая на проект Google, поэтому ключи нужны из разных проектов или аккаунтов.",
-            f"{ui.e('settings')} <b>Настройки.</b> Формат, длина, язык, оформление PDF, блоки, расшифровка отдельным файлом.",
+            f"{ui.e('settings')} <b>Настройки.</b> Формат, длина, язык, оформление PDF, блоки.",
             "",
             "Команды: /settings, /keys, /help.",
         ]
@@ -175,7 +175,6 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
             f"{ui.e('language')} Язык: <b>{LANGUAGE_TITLES[settings.language]}</b>",
             f"{ui.e('theme')} Оформление PDF: <b>{html(_theme_name(settings))}</b>",
             f"{ui.e('blocks')} Блоки: <b>{len(settings.blocks)} из {len(BLOCKS)}</b>",
-            f"{ui.e('transcript')} Расшифровка файлом: <b>{'да' if settings.send_transcript else 'нет'}</b>",
         ]
     )
     rows = [
@@ -183,7 +182,6 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
          ui.button("length", "Длина", "st:menu:length")],
         [ui.button("language", "Язык", "st:menu:language"), ui.button("theme", "Оформление", "st:menu:theme")],
         [ui.button("blocks", "Блоки конспекта", "st:menu:blocks")],
-        [ui.button("transcript", f"Расшифровка файлом: {'вкл' if settings.send_transcript else 'выкл'}", "st:tr")],
         [ui.button("reset", "Сбросить", "st:reset", style="danger"),
          ui.button("ok", "Готово", "st:close", style="success")],
     ]
