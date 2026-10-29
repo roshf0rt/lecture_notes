@@ -1,0 +1,9 @@
+[Unit]
+Description=Run a notes-bot update when an admin asks for one from the bot
+
+[Path]
+PathExists=/var/lib/notes-bot/update.request
+Unit=notes-bot-update.service
+
+[Install]
+WantedBy=multi-user.target

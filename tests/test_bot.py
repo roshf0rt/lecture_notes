@@ -693,3 +693,17 @@ def test_both_formats_arrive_automatically_messages_first(tmp_path):
     first_pdf = kinds.index("document")
     assert first_pdf > 0 and set(kinds[:first_pdf]) == {"text"}  # the messages come before the PDF
     assert [r for r in message.replies if "document" in r][0]["filename"] == "Лекция.pdf"
+
+
+def test_admin_update_button_leaves_a_request_for_the_server(tmp_path):
+    h = Harness(tmp_path)
+    query = h.tap(ADMIN, "ad:update", admin.on_admin_button)
+    assert (tmp_path / "update.request").read_text() == str(ADMIN)
+    assert "Обновление запрошено" in query.edited[-1][0]
+
+
+def test_only_admins_can_request_an_update(tmp_path):
+    h = Harness(tmp_path)
+    query = h.tap(1, "ad:update", admin.on_admin_button)
+    assert query.answers == ["Только для админов"]
+    assert not (tmp_path / "update.request").exists()

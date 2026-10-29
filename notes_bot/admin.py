@@ -19,6 +19,7 @@ from .ui import Ui, html
 log = logging.getLogger(__name__)
 
 PAGE_SIZE = 8
+UPDATE_REQUEST = "update.request"  # read by deploy/update.sh on the server
 BROADCAST_DELAY = 0.05  # stays well under Telegram's ~30 messages per second
 MODEL_PRESETS = (
     "gemini-3.5-flash-lite",
@@ -72,6 +73,7 @@ def home_view(ui: Ui, s: Services) -> tuple[str, InlineKeyboardMarkup]:
         [ui.button("key", "Общие ключи", "ad:pool:show"), ui.button("broadcast", "Рассылка", "ad:bc")],
         [ui.button("switches", "Параметры", "ad:opt"), ui.button("search", "Найти по ID", "ad:find")],
         [ui.button("reset", "Обновить", "ad:home"), ui.button("no", "Закрыть", "ad:close")],
+        [ui.button("reset", "Обновить бота из git", "ad:update", style="primary")],
     ]
     return text, InlineKeyboardMarkup(rows)
 
@@ -264,6 +266,15 @@ async def on_admin_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if action == "close":
         await query.answer()
         await edit(query, f"{ui.e('admin')} Админ-панель закрыта. Открыть снова: /admin")
+        return
+    if action == "update":
+        # The bot cannot replace its own code (it runs without root): it leaves a request, and a root
+        # service on the server does the update and tells the admin how it went.
+        (s.config.data_dir / UPDATE_REQUEST).write_text(str(viewer), encoding="utf-8")
+        await query.answer("Запрос отправлен")
+        await edit(query, f"{ui.e('reset')} Обновление запрошено. Если есть новый код, бот обновится и перезапустится "
+                           "в течение пары минут. Сообщение придёт сюда.", InlineKeyboardMarkup(
+                               [[ui.button("back", "Назад", "ad:home")]]))
         return
     if action == "stats":
         await query.answer()

@@ -65,8 +65,9 @@ fi
 install -m 644 "$APP_DIR/deploy/notes-bot-update.service" /etc/systemd/system/notes-bot-update.service
 install -m 644 "$APP_DIR/deploy/notes-bot-update.timer" /etc/systemd/system/notes-bot-update.timer
 chmod +x "$APP_DIR/deploy/update.sh"
+install -m 644 "$APP_DIR/deploy/notes-bot-update.path" /etc/systemd/system/notes-bot-update.path
 systemctl daemon-reload
-systemctl enable --quiet --now notes-bot-update.timer
+systemctl enable --quiet --now notes-bot-update.timer notes-bot-update.path
 systemctl daemon-reload
 systemctl enable --quiet notes-bot
 # restart, not start: on an update the old code is still running

@@ -5,18 +5,39 @@ set -euo pipefail
 
 APP_DIR=${APP_DIR:-/opt/notes-bot}
 BRANCH=${BRANCH:-notes-bot}
+DATA_DIR=${DATA_DIR:-/var/lib/notes-bot}
+ENV_FILE=${ENV_FILE:-/etc/notes-bot/bot.env}
+REQUEST="$DATA_DIR/update.request"
+
+# An admin asked for this update from the bot: remember who, and tell them the outcome.
+ASKED_BY=""
+if [ -f "$REQUEST" ]; then
+  ASKED_BY=$(cat "$REQUEST")
+  rm -f "$REQUEST"
+fi
+
+notify() {
+  [ -n "$ASKED_BY" ] || return 0
+  local token api
+  token=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)
+  api=$(grep '^TELEGRAM_API_URL=' "$ENV_FILE" | cut -d= -f2- || true)
+  curl -s -m 20 -X POST "${api:-https://api.telegram.org}/bot$token/sendMessage" \
+    -d chat_id="$ASKED_BY" --data-urlencode text="$1" >/dev/null || true
+}
 
 cd "$APP_DIR"
 git fetch --quiet origin "$BRANCH"
 OLD=$(git rev-parse HEAD)
 NEW=$(git rev-parse "origin/$BRANCH")
 if [ "$OLD" = "$NEW" ]; then
+  notify "Новой версии нет, бот уже на последнем коммите (${OLD:0:7})."
   exit 0
 fi
 
 # A recording being converted right now would be cut off by a restart. Try again in ten minutes.
 if pgrep -x ffmpeg >/dev/null; then
   echo "A recording is being converted; the update waits for the next run."
+  notify "Сейчас конвертируется запись, обновление отложено. Нажмите кнопку ещё раз через пару минут."
   exit 0
 fi
 
@@ -31,6 +52,7 @@ fi
 git reset --quiet --hard "$NEW"
 chmod -R a+rX "$APP_DIR"
 if [ -z "${SKIP_RESTART:-}" ]; then
+  notify "Бот обновлён до ${NEW:0:7} и перезапускается."
   systemctl restart notes-bot
 fi
 echo "Updated to $NEW"
