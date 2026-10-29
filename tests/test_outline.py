@@ -114,3 +114,11 @@ def test_fixed_parts_cover_the_whole_text():
     blocks = paragraphs_of(_long_text(400))
     parts = fixed(blocks, limit=5000)
     assert "".join(part.text.replace("\n", "") for part in parts) == "".join(block.replace("\n", "") for block in blocks)
+
+
+def test_without_merging_every_topic_the_model_found_keeps_its_own_note():
+    big = "x" * 300
+    blocks = [f"абзац {n} {big}" for n in range(3)]
+    raw = [{"title": "Первая", "from": 0}, {"title": "Вторая", "from": 1}, {"title": "Третья", "from": 2}]
+    assert [part.title for part in plan(raw, blocks, merge=False)] == ["Первая", "Вторая", "Третья"]
+    assert [part.title for part in plan(raw, blocks)] == ["Первая"]

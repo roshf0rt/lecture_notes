@@ -110,21 +110,21 @@ class NotesPipeline:
             return [await self._note(settings, text, progress, premium)]
 
         await progress("outlining")
-        parts = await self._outline(text)
+        parts = await self._outline(text, merge=settings.length != "full")
         results = []
         for number, part in enumerate(parts, start=1):
             await progress("writing", f"{number} из {len(parts)}")
             results.append(await self._note(settings, part.text, progress, premium))
         return results
 
-    async def _outline(self, text: str) -> list[Part]:
+    async def _outline(self, text: str, merge: bool = True) -> list[Part]:
         blocks = paragraphs_of(text)
         try:
             raw = await self._model.outline(marked(blocks))
         except GeminiError:
             log.warning("No outline from the model; splitting the text into equal parts")
             raw = []
-        return plan(raw, blocks)
+        return plan(raw, blocks, merge=merge)
 
     async def _note(self, settings: UserSettings, text: str, progress: Progress, premium: bool) -> Result:
         await progress("writing")

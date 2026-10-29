@@ -38,7 +38,7 @@ def marked(paragraphs: list[str]) -> str:
     return "\n".join(f"[{number}] {paragraph}" for number, paragraph in enumerate(paragraphs))
 
 
-def plan(raw: list[dict], blocks: list[str], limit: int = SPLIT_CHARS) -> list[Part]:
+def plan(raw: list[dict], blocks: list[str], limit: int = SPLIT_CHARS, merge: bool = True) -> list[Part]:
     """Turn the model's starts into parts. Anything unusable falls back to equal parts."""
     starts: dict[int, str] = {}
     for item in raw if isinstance(raw, list) else []:
@@ -57,7 +57,8 @@ def plan(raw: list[dict], blocks: list[str], limit: int = SPLIT_CHARS) -> list[P
         for start, end in zip(ordered, ordered[1:] + [len(blocks)])
     ]
     parts: list[Part] = []
-    for topic in _merge_small([topic for topic in topics if topic.text]):
+    topics = [topic for topic in topics if topic.text]
+    for topic in (_merge_small(topics) if merge else topics):
         if len(topic.text) > limit:
             parts.extend(Part(f"{topic.title}, часть {number}", piece)
                          for number, piece in enumerate(_chunks(topic.text.split("\n\n"), limit), start=1))
