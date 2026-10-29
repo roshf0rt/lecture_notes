@@ -280,3 +280,20 @@ def test_clients_of_one_key_share_the_limiter_and_it_is_used():
                            limiter=Counting())
     asyncio.run(client.check_key())
     assert entered == [1]
+
+
+def test_note_with_nulls_is_accepted_and_bad_reply_is_asked_again():
+    good = {"title": "Реклама", "main_idea": None, "takeaways": ["Вывод"], "context": None}
+    document = asyncio.run(_client(lambda request: _reply(json.dumps(good, ensure_ascii=False))).write("т " * 50, ["takeaways"], "medium"))
+    assert document.takeaways == ["Вывод"] and document.main_idea == ""
+
+    replies = iter(["[1, 2]", json.dumps({"title": "Реклама"})])
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return _reply(next(replies))
+
+    document = asyncio.run(_client(handler).write("т " * 50, ["takeaways"], "medium"))
+    assert document.title == "Реклама" and len(requests) == 2
+    assert "Ответ не подошёл" in _seen(requests)[1]["messages"][-1]["content"]

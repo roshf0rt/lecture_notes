@@ -43,6 +43,7 @@ PIECE_GAP = 3.0  # pause between the pieces of one recording
 # Recordings longer than MAX_PIECE_SECONDS are cut into the fewest equal pieces, at pauses in the speech.
 MAX_PIECE_SECONDS = 15 * 60
 REQUEST_TIMEOUT = 300.0
+NOTE_ATTEMPTS = 2
 BAD_FORMAT = "Конспект получился в неверном формате. Попробуйте ещё раз."
 
 
@@ -107,6 +108,15 @@ def _classify_kind(response: httpx.Response) -> GeminiError:
     if code in (403, 404):
         return GeminiError("Эта модель не входит в пакет вашего ключа. Сообщите владельцу бота.", MODEL)
     return GeminiError(f"Поставщик ключа вернул ошибку {code}. Попробуйте ещё раз.")
+
+
+def _without_nulls(value):
+    """Models write null for an empty field; the note model wants it missing instead."""
+    if isinstance(value, dict):
+        return {key: _without_nulls(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_without_nulls(item) for item in value if item is not None]
+    return value
 
 
 def _strip_fences(text: str) -> str:
@@ -265,19 +275,23 @@ class GatewayClient:
             {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nОтвет — только один JSON-объект по этой схеме, без пояснений и без обрамления в ```:\n{schema}"},
             {"role": "user", "content": build_user_message(transcript, enabled, length_id, language)},
         ]
-        text, truncated = await self._post(messages, MAX_OUTPUT_TOKENS)
-        if truncated:
-            raise GeminiError("Конспект не уместился в ответ модели. Выберите более короткую длину.")
-        if not text.strip():
-            raise GeminiError("Модель не вернула конспект. Попробуйте ещё раз.")
-        try:
-            data = json.loads(_strip_fences(text))
-        except json.JSONDecodeError as error:
-            raise GeminiError("Модель вернула конспект в неверном формате. Попробуйте ещё раз.") from error
-        try:
-            return NoteDocument.model_validate(data)
-        except ValueError as error:  # pydantic's ValidationError is a ValueError
-            raise GeminiError(BAD_FORMAT) from error
+        problem = ""
+        for attempt in range(1, NOTE_ATTEMPTS + 1):
+            text, truncated = await self._post(messages, MAX_OUTPUT_TOKENS)
+            if truncated:
+                raise GeminiError("Конспект не уместился в ответ модели. Выберите более короткую длину.")
+            if not text.strip():
+                raise GeminiError("Модель не вернула конспект. Попробуйте ещё раз.")
+            try:
+                return NoteDocument.model_validate(_without_nulls(json.loads(_strip_fences(text))))
+            except ValueError as error:  # bad JSON, or pydantic's ValidationError
+                problem = str(error)
+                log.warning("Gateway note, attempt %d: unusable reply (%s): %.300s", attempt, problem.splitlines()[0], text)
+                messages = messages[:2] + [
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": f"Ответ не подошёл: {problem[:400]}\nОтветь заново одним JSON-объектом строго по схеме."},
+                ]
+        raise GeminiError(BAD_FORMAT)
 
     async def close(self) -> None:
         await self._http.aclose()
