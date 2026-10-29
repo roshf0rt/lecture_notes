@@ -41,7 +41,10 @@ def test_a_real_transcript_passes_even_if_it_mentions_files():
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
-def test_the_gateway_reply_without_audio_is_refused_so_another_key_can_try():
+def test_the_gateway_reply_without_audio_is_refused_so_another_key_can_try(monkeypatch):
+    import notes_bot.gateway as gateway
+
+    monkeypatch.setattr(gateway, "PIECE_RETRY_DELAY", 0)
     transport = httpx.MockTransport(lambda request: httpx.Response(
         200, json={"choices": [{"message": {"content": NO_AUDIO_REPLY}, "finish_reason": "stop"}]}))
     client = GatewayClient(GATEWAY_KEY, "gemini-3.5-flash", transport=transport)
@@ -51,7 +54,7 @@ def test_the_gateway_reply_without_audio_is_refused_so_another_key_can_try():
     ).stdout
     with pytest.raises(GeminiError) as caught:
         asyncio.run(client.transcribe(wav, "x.wav"))
-    assert caught.value.kind == MODEL and "не распознал аудио" in str(caught.value)
+    assert caught.value.kind == MODEL and "не распознал часть 1 из 1" in str(caught.value)
 
 
 class ScriptedClient:
@@ -113,3 +116,50 @@ def test_the_model_reports_when_a_gateway_key_recognised_the_speech():
     quiet = RotatingModel([GOOGLE_KEY], lambda key: ScriptedClient(key, []), KeyRing())
     asyncio.run(quiet.transcribe(b"", "x.ogg"))
     assert quiet.gateway_transcribed is False
+
+
+def _wav():
+    return subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-f", "wav", "pipe:1"],
+        check=True, capture_output=True,
+    ).stdout
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_a_piece_the_gateway_failed_to_hear_is_asked_again(monkeypatch):
+    import notes_bot.gateway as gateway
+
+    monkeypatch.setattr(gateway, "PIECE_RETRY_DELAY", 0)
+    replies = iter([NO_AUDIO_REPLY, "Настоящая расшифровка куска."])
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": next(replies)}, "finish_reason": "stop"}]})
+
+    client = GatewayClient(GATEWAY_KEY, "gemini-3.5-flash", transport=httpx.MockTransport(handler))
+    assert asyncio.run(client.transcribe(_wav(), "x.wav")) == "Настоящая расшифровка куска."
+    assert len(requests) == 2
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_a_piece_that_never_comes_back_fails_with_its_number(monkeypatch):
+    import notes_bot.gateway as gateway
+
+    monkeypatch.setattr(gateway, "PIECE_RETRY_DELAY", 0)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": NO_AUDIO_REPLY}, "finish_reason": "stop"}]})
+
+    client = GatewayClient(GATEWAY_KEY, "gemini-3.5-flash", transport=httpx.MockTransport(handler))
+    with pytest.raises(GeminiError, match="часть 1 из 1") as caught:
+        asyncio.run(client.transcribe(_wav(), "x.wav"))
+    assert caught.value.kind == MODEL and len(requests) == gateway_attempts()
+
+
+def gateway_attempts():
+    from notes_bot.gateway import PIECE_ATTEMPTS
+
+    return PIECE_ATTEMPTS

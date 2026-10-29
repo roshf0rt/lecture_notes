@@ -6,6 +6,7 @@ about storing them. The bot warns about that whenever such a key is added.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -31,6 +32,8 @@ log = logging.getLogger(__name__)
 
 GATEWAY_URL = "https://api.aikeysforyou.com/v1"
 MAX_OUTPUT_TOKENS = 16_000
+PIECE_ATTEMPTS = 3
+PIECE_RETRY_DELAY = 2.0
 # Recordings longer than MAX_PIECE_SECONDS are cut into the fewest equal pieces, at pauses in the speech.
 MAX_PIECE_SECONDS = 15 * 60
 REQUEST_TIMEOUT = 300.0
@@ -162,7 +165,7 @@ class GatewayClient:
                 pieces = [await to_mp3(audio, extension)]
         except AudioError as error:
             raise GeminiError(str(error)) from error
-        texts = [await self._transcribe_piece(piece) for piece in pieces]
+        texts = [await self._checked_piece(number, len(pieces), piece) for number, piece in enumerate(pieces, start=1)]
         text = "\n\n".join(part for part in texts if part)
         if not text:
             raise GeminiError("В записи не нашлось речи.")
@@ -171,6 +174,24 @@ class GatewayClient:
             # The gateway did not pass the audio to the model. Another key may do better.
             raise GeminiError(f"Поставщик ключа не распознал аудио: {reason}.", MODEL)
         return text
+
+    async def _checked_piece(self, number: int, total: int, data: bytes) -> str:
+        """One piece, asked again when the reply is a request for a file instead of a transcript.
+
+        The supplier's gateway sometimes hands a request to a backend that does not take audio, so the
+        same piece may succeed on the next try.
+        """
+        reason = None
+        for attempt in range(1, PIECE_ATTEMPTS + 1):
+            text = await self._transcribe_piece(data)
+            reason = junk_reason(text)
+            log.info("Gateway piece %d/%d: %d characters, attempt %d%s", number, total, len(text), attempt,
+                     f", junk: {reason}" if reason else "")
+            if reason is None:
+                return text
+            if attempt < PIECE_ATTEMPTS:
+                await asyncio.sleep(PIECE_RETRY_DELAY)
+        raise GeminiError(f"Поставщик ключа не распознал часть {number} из {total}: {reason}.", MODEL)
 
     async def _transcribe_piece(self, data: bytes) -> str:
         encoded = base64.b64encode(data).decode("ascii")
