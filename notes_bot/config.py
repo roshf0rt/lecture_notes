@@ -30,6 +30,8 @@ class Config:
     max_parallel_jobs: int = 3
     # Address of a local Bot API server (lifts the 20 MB download limit). Empty = Telegram's cloud API.
     telegram_api_url: str = ""
+    # Model name used with keys of the resold gateway. It must be one the key's package allows.
+    gateway_model: str = "gemini-3.5-flash"
 
     @property
     def local_mode(self) -> bool:
@@ -41,6 +43,7 @@ class Config:
         return cls(
             telegram_token=_required("TELEGRAM_BOT_TOKEN"),
             gemini_model=env.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip(),
+            gateway_model=env.get("GATEWAY_MODEL", "gemini-3.5-flash").strip(),
             data_dir=Path(env.get("DATA_DIR", "data")),
             allowed_user_ids=_user_ids("ALLOWED_USER_IDS"),
             admin_ids=_user_ids("ADMIN_IDS"),

@@ -27,8 +27,9 @@ from telegram.ext import (
 from . import admin
 from .audio import is_media, sniff
 from .config import Config
+from .gateway import GatewayClient
 from .gemini import GeminiClient, GeminiError
-from .keys import KEY_PATTERN, KeyVault
+from .keys import KEY_PATTERN, KeyVault, is_gateway_key
 from .menus import (
     AI_STUDIO,
     BLOCK_PRESETS,
@@ -49,7 +50,7 @@ from .menus import (
 )
 from .pipeline import NotesPipeline, Result, Source
 from .render_tg import plain_text
-from .services import ADDED, SHARED, Services, add_keys, check_keys, edit, key_report, reply, services
+from .services import ADDED_OUTCOMES, SHARED, Services, add_keys, check_keys, edit, key_report, reply, services
 from .settings import SettingsStore, UserSettings
 from .storage import BotState, Options
 from .themes import CUSTOM, parse_hex
@@ -265,7 +266,7 @@ async def _save_keys(update: Update, context: ContextTypes.DEFAULT_TYPE, found: 
     user_id = update.effective_user.id
     status = await reply(message, f"{ui.e('clock')} Проверяю {'ключи' if len(found) > 1 else 'ключ'}…")
     report = await add_keys(s, user_id, found)
-    added = any(outcome == ADDED for _, outcome in report)
+    added = any(outcome in ADDED_OUTCOMES for _, outcome in report)
     if added:
         context.user_data.pop("awaiting", None)
     text, keyboard = _keys_view(s, user_id)
@@ -637,6 +638,16 @@ async def _post_init(application: Application) -> None:
             await application.bot.set_my_commands(ADMIN_COMMANDS, scope=BotCommandScopeChat(admin_id))
 
 
+def _client_factory(config: Config):
+    """Keys of the resold gateway go to their own client; everything else is a Google AI Studio key."""
+    def make_client(api_key: str, model: str):
+        if is_gateway_key(api_key):
+            return GatewayClient(api_key, config.gateway_model)
+        return GeminiClient(api_key, model)
+
+    return make_client
+
+
 def build_services(config: Config) -> Services:
     return Services(
         config=config,
@@ -648,7 +659,7 @@ def build_services(config: Config) -> Services:
             admin_ids=config.admin_ids,
             allowed_ids=config.allowed_user_ids,
         ),
-        make_client=lambda api_key, model: GeminiClient(api_key, model),
+        make_client=_client_factory(config),
     )
 
 

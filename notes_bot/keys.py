@@ -14,7 +14,14 @@ POOL = 0
 MAX_USER_KEYS = 10
 MAX_POOL_KEYS = 50
 # Google AI Studio keys: the classic "AIza…" and the newer "AQ.…" format.
-KEY_PATTERN = re.compile(r"(?:AIza|AQ\.)[0-9A-Za-z_.-]{30,80}")
+# Keys of the resold gateway (see gateway.py) start with "sk-cvc-".
+GATEWAY_PREFIX = "sk-cvc-"
+KEY_PATTERN = re.compile(r"(?:AIza|AQ\.)[0-9A-Za-z_.-]{30,80}|sk-cvc-[0-9a-f]{32,128}")
+
+
+def is_gateway_key(api_key: str) -> bool:
+    """Gateway keys are served by a third party, not by Google; the owner must accept that."""
+    return api_key.startswith(GATEWAY_PREFIX)
 
 
 def _load_or_create_secret(path: Path) -> bytes:

@@ -13,7 +13,7 @@ from telegram.ext import ContextTypes
 from .config import Config
 from .gemini import AUTH, QUOTA, GeminiError
 from .keyring import KeyRing, RotatingModel
-from .keys import POOL, KeyVault, mask
+from .keys import POOL, KeyVault, is_gateway_key, mask
 from .pipeline import Model
 from .settings import SettingsStore
 from .storage import BotState, Options
@@ -121,7 +121,12 @@ async def edit(target, text: str, keyboard: InlineKeyboardMarkup | None = None) 
             text, keyboard = without_premium(text, keyboard)
 
 
-ADDED, DUPLICATE, FULL = "added", "duplicate", "full"
+ADDED, DUPLICATE, FULL, GATEWAY_ADDED = "added", "duplicate", "full", "gateway"
+ADDED_OUTCOMES = (ADDED, GATEWAY_ADDED)
+GATEWAY_WARNING = (
+    "Ключ работает через стороннего посредника. Ваши записи и тексты будут уходить ему, "
+    "а условия хранения данных он не публикует. Если это не подходит, удалите ключ в /keys."
+)
 
 
 async def add_keys(services: Services, owner: int, keys: list[str]) -> list[tuple[str, str]]:
@@ -145,7 +150,7 @@ async def add_keys(services: Services, owner: int, keys: list[str]) -> list[tupl
             report.append((masked, "не получилось проверить, попробуйте позже"))
             continue
         services.keys.add(owner, api_key)
-        report.append((masked, ADDED))
+        report.append((masked, GATEWAY_ADDED if is_gateway_key(api_key) else ADDED))
     return report
 
 
@@ -154,6 +159,8 @@ def key_report(ui: Ui, report: list[tuple[str, str]]) -> str:
     for masked, outcome in report:
         if outcome == ADDED:
             lines.append(f"{ui.e('ok')} <code>{html(masked)}</code> добавлен")
+        elif outcome == GATEWAY_ADDED:
+            lines.append(f"{ui.e('ok')} <code>{html(masked)}</code> добавлен. {ui.e('warning')} {html(GATEWAY_WARNING)}")
         elif outcome == DUPLICATE:
             lines.append(f"{ui.e('info')} <code>{html(masked)}</code> уже есть")
         elif outcome == FULL:

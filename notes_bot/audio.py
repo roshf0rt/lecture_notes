@@ -136,18 +136,17 @@ def _read_head(path: Path) -> bytes:
         return file.read(4096)
 
 
-async def _to_opus(data: bytes | None, path: Path | None, extension: str) -> bytes:
-    """Convert to mono Opus. A file that is already on disk is read by ffmpeg in place, not copied."""
+async def _ffmpeg(data: bytes | None, path: Path | None, extension: str, output_args: list[str], output_name: str) -> bytes:
+    """Run ffmpeg on the recording. A file already on disk is read in place, not copied."""
     with tempfile.TemporaryDirectory(prefix="notes-bot-") as folder:
         source = path
         if source is None:
             source = Path(folder) / f"input{extension}"
             source.write_bytes(data)
-        target = Path(folder) / "output.ogg"
+        target = Path(folder) / output_name
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-            "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libopus", "-b:a", "24k",
-            str(target),
+            "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", *output_args, str(target),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -161,6 +160,16 @@ async def _to_opus(data: bytes | None, path: Path | None, extension: str) -> byt
             log.warning("ffmpeg failed for %s: %s", extension, stderr.decode(errors="replace")[-500:])
             raise AudioError("Не получилось прочитать запись.")
         return target.read_bytes()
+
+
+async def _to_opus(data: bytes | None, path: Path | None, extension: str) -> bytes:
+    """Convert to mono Opus."""
+    return await _ffmpeg(data, path, extension, ["-c:a", "libopus", "-b:a", "24k"], "output.ogg")
+
+
+async def to_mp3(data: bytes, extension: str) -> bytes:
+    """Convert to mono MP3, the format the gateway accepts for audio input."""
+    return await _ffmpeg(data, None, extension, ["-c:a", "libmp3lame", "-b:a", "32k"], "output.mp3")
 
 
 async def prepare(
