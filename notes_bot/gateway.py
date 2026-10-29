@@ -268,11 +268,11 @@ class GatewayClient:
             raise GeminiError("Часть записи слишком длинная для одного ответа поставщика. Разрежьте запись на части поменьше.")
         return text.strip()
 
-    async def write(self, transcript: str, length_id: str, language: str = "auto") -> NoteDocument:
+    async def write(self, transcript: str, length_id: str, language: str = "auto", extras=()) -> NoteDocument:
         schema = json.dumps(note_schema(), ensure_ascii=False)
         messages = [
             {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nОтвет — только один JSON-объект по этой схеме, без пояснений и без обрамления в ```:\n{schema}"},
-            {"role": "user", "content": build_user_message(transcript, length_id, language)},
+            {"role": "user", "content": build_user_message(transcript, length_id, language, extras)},
         ]
         problem = ""
         for attempt in range(1, NOTE_ATTEMPTS + 1):

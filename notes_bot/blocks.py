@@ -10,6 +10,27 @@ class Length:
     guidance: str
 
 
+@dataclass(frozen=True)
+class Extra:
+    """A closing section the user may ask for. The model adds it at the end of the note."""
+
+    id: str
+    title: str
+    instruction: str
+
+
+EXTRAS: tuple[Extra, ...] = (
+    Extra("remember", "Что запомнить",
+          "раздел «Что запомнить»: элемент checklist на 5–10 самых важных мыслей, каждая одной фразой."),
+    Extra("questions", "Вопросы для самопроверки",
+          "раздел «Вопросы для самопроверки»: элемент numbered на 5–10 вопросов по материалу, "
+          "от определений до применения. Ответы не пиши."),
+    Extra("terms", "Термины и определения",
+          "раздел «Термины и определения»: элемент table с колонками «Термин» и «Определение», "
+          "все термины лекции в порядке появления, определение по лекции в одну-две фразы."),
+)
+EXTRA_BY_ID: dict[str, Extra] = {extra.id: extra for extra in EXTRAS}
+
 LENGTHS: tuple[Length, ...] = (
     Length(
         "short",

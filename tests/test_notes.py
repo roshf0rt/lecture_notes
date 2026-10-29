@@ -60,3 +60,12 @@ def test_user_message_guards_material_and_carries_the_length():
     assert message.count("</material>") == 1
     assert "Максимально полно" in message
     assert "Допустимые поля" not in message
+
+
+def test_extras_are_asked_for_only_when_chosen_and_in_a_fixed_order():
+    plain = build_user_message("т", "long")
+    assert "дополнительные разделы" not in plain
+    message = build_user_message("т", "long", "auto", ["terms", "remember"])
+    assert "дополнительные разделы" in message
+    assert message.index("Что запомнить") < message.index("Термины и определения")
+    assert "Вопросы для самопроверки" not in message

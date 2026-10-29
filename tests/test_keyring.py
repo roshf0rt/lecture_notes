@@ -34,7 +34,7 @@ class ScriptedClient:
     async def transcribe(self, audio, filename):
         return await self.check_key()
 
-    async def write(self, transcript, length, language="auto"):
+    async def write(self, transcript, length, language="auto", extras=()):
         return await self.check_key()
 
 

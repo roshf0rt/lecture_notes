@@ -190,6 +190,9 @@ async def on_settings_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         field, value = args
         settings = apply_choice(settings, field, value)
         view = field
+    elif action == "ext":
+        settings = settings.toggle_extra(args[0])
+        view = "extras"
     elif action == "raw":
         settings = replace(settings, ask_raw=not settings.ask_raw)
     elif action == "reset":

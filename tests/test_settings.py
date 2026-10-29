@@ -41,3 +41,12 @@ def test_store_roundtrip_and_default_for_new_user(tmp_path):
     reopened = SettingsStore(tmp_path / "nested" / "settings.sqlite3")
     assert reopened.get(42) == saved
     assert reopened.get(7) == UserSettings()
+
+
+def test_extras_toggle_in_a_fixed_order_and_survive_a_roundtrip():
+    settings = UserSettings().toggle_extra("terms").toggle_extra("remember").toggle_extra("bogus")
+    assert settings.extras == ("remember", "terms")
+    assert settings.toggle_extra("remember").extras == ("terms",)
+    assert UserSettings.from_dict(settings.to_dict()) == settings
+    assert UserSettings.from_dict({"extras": ["terms", "nope"]}).extras == ("terms",)
+    assert UserSettings().extras == ()

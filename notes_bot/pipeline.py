@@ -43,7 +43,7 @@ class Model(Protocol):
 
     async def transcribe(self, audio: bytes, filename: str) -> str: ...
 
-    async def write(self, transcript: str, length_id: str, language: str = "auto") -> NoteDocument: ...
+    async def write(self, transcript: str, length_id: str, language: str = "auto", extras: tuple[str, ...] = ()) -> NoteDocument: ...
 
 
 @dataclass(frozen=True)
@@ -81,7 +81,8 @@ class NotesPipeline:
 
         await progress("writing")
         length = ONE_MESSAGE_LENGTH_ID if settings.output == "tg_one" else settings.length
-        document = await self._model.write(text, length, settings.language)
+        extras = () if settings.output == "tg_one" else settings.extras  # one message has no room for them
+        document = await self._model.write(text, length, settings.language, extras)
         if not document.sections and not document.main_idea:
             raise GeminiError("Модель вернула пустой конспект. Попробуйте ещё раз.")
 

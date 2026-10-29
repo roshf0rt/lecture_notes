@@ -62,7 +62,7 @@ class FakeModel:
             raise GeminiError("лимит", QUOTA)
         return LONG_TEXT
 
-    async def write(self, transcript, length, language="auto"):
+    async def write(self, transcript, length, language="auto", extras=()):
         self.log.append(("write", self.api_key, language))
         if self.fail_write is not None:
             raise self.fail_write
@@ -789,3 +789,11 @@ def test_scanned_pdf_without_text_is_refused(tmp_path):
     h.run(on_media, 5, message=message)
     assert "похоже, это скан" in message.replies[-1]["text"]
     assert [call for call in h.calls if call[0] == "write"] == []
+
+
+def test_extras_can_be_switched_on_in_the_settings_menu(tmp_path):
+    h = Harness(tmp_path)
+    h.tap(1, "st:ext:questions", on_settings_button)
+    assert h.services.store.get(1).extras == ("questions",)
+    h.tap(1, "st:ext:questions", on_settings_button)
+    assert h.services.store.get(1).extras == ()

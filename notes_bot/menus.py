@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
-from .blocks import LENGTH_BY_ID, LENGTHS
+from .blocks import EXTRAS, LENGTH_BY_ID, LENGTHS
 from .keyring import KeyRing
 from .keys import StoredKey
 from .settings import LANGUAGES, OUTPUTS, UserSettings
@@ -116,6 +116,11 @@ def _choice(ui: Ui, selected: bool, icon: str | None, text: str, data: str):
     return ui.button("ok" if selected else icon, text, data, style="success" if selected else None)
 
 
+def _extras_text(settings: UserSettings) -> str:
+    chosen = [extra.title for extra in EXTRAS if extra.id in settings.extras]
+    return html(", ".join(chosen)) if chosen else "нет"
+
+
 def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, InlineKeyboardMarkup]:
     back = ui.button("back", "Назад", "st:menu:main")
 
@@ -141,6 +146,14 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
                 "если лекция на другом языке.")
         return text, InlineKeyboardMarkup([*rows, [back]])
 
+    if name == "extras":
+        rows = [[ui.button("ok" if extra.id in settings.extras else "no", extra.title, f"st:ext:{extra.id}")]
+                for extra in EXTRAS]
+        text = (f"{ui.e('blocks')} <b>Дополнения к конспекту</b>\n\n"
+                "Основные разделы ИИ выбирает сам по лекции. Здесь можно добавить в конец конспекта то, что нужно не всем. "
+                "В режиме «Одно короткое сообщение» дополнения не добавляются.")
+        return text, InlineKeyboardMarkup([*rows, [back]])
+
     if name == "theme":
         presets = [_choice(ui, settings.theme == theme.id, None, theme.title, f"st:set:theme:{theme.id}")
                    for theme in THEMES.values()]
@@ -160,6 +173,7 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
             f"{ui.e('length')} Длина: <b>{LENGTH_BY_ID[settings.length].title}</b>",
             f"{ui.e('language')} Язык: <b>{LANGUAGE_TITLES[settings.language]}</b>",
             f"{ui.e('theme')} Оформление PDF: <b>{html(_theme_name(settings))}</b>",
+            f"{ui.e('blocks')} Дополнения: <b>{_extras_text(settings)}</b>",
             f"{ui.e('transcript')} Спрашивать про «только текст»: <b>{'да' if settings.ask_raw else 'нет'}</b>",
         ]
     )
@@ -167,6 +181,7 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
         [ui.button(OUTPUT_ICONS[settings.output], "Формат", "st:menu:output"),
          ui.button("length", "Длина", "st:menu:length")],
         [ui.button("language", "Язык", "st:menu:language"), ui.button("theme", "Оформление", "st:menu:theme")],
+        [ui.button("blocks", "Дополнения к конспекту", "st:menu:extras")],
         [ui.button("transcript", f"Спрашивать про «только текст»: {'вкл' if settings.ask_raw else 'выкл'}", "st:raw")],
         [ui.button("reset", "Сбросить", "st:reset", style="danger"),
          ui.button("ok", "Готово", "st:close", style="success")],

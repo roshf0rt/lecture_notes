@@ -4,7 +4,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .blocks import LENGTH_BY_ID
+from collections.abc import Iterable
+
+from .blocks import EXTRA_BY_ID, EXTRAS, LENGTH_BY_ID
 
 DEFAULT_ICON = "📚"
 
@@ -175,7 +177,7 @@ SYSTEM_PROMPT = """Ты редактор учебных конспектов. П
   • toggle — кейс или пример из лекции: title — название, text — разбор.
   • checklist — что запомнить, что подготовить, что сделать к следующему занятию.
   • subheading — подзаголовок внутри большого раздела.
-- Не заполняй структуру ради структуры: элемент нужен только тогда, когда в материале есть для него содержание. Итоговый раздел («Что запомнить», «Что готовить к экзамену», «Короткая шпаргалка») добавляй в конце, если материал этого стоит.
+- Не заполняй структуру ради структуры: элемент нужен только тогда, когда в материале есть для него содержание. Итоговые разделы вроде «Что запомнить», «Вопросы для самопроверки» или словаря терминов добавляй только если о них просят в запросе.
 
 Содержание:
 - Будь максимально полным. Включи все темы лекции, термины с определениями, имена, даты, цифры, кейсы, примеры, логику рассуждений лектора, задания, требования и сроки (контрольная, экзамен). Не пропускай тему только потому, что она короткая.
@@ -195,11 +197,19 @@ LANGUAGE_RULES = {
 }
 
 
-def build_user_message(transcript: str, length_id: str, language: str = "auto") -> str:
+def build_user_message(transcript: str, length_id: str, language: str = "auto", extras: Iterable[str] = ()) -> str:
     length = LENGTH_BY_ID[length_id]
     material = transcript.replace("</material>", "")
+    chosen = set(extras)
+    wanted = [extra.instruction for extra in EXTRAS if extra.id in chosen]
+    closing = (
+        "Добавь в конец конспекта дополнительные разделы, по одному на пункт, в этом порядке:\n"
+        + "\n".join(f"- {text}" for text in wanted) + "\n\n"
+        if wanted else ""
+    )
     return (
         LANGUAGE_RULES.get(language, "")
         + f"Объём конспекта: {length.guidance}\n\n"
-        f"<material>\n{material}\n</material>"
+        + closing
+        + f"<material>\n{material}\n</material>"
     )

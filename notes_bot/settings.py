@@ -5,7 +5,7 @@ import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .blocks import DEFAULT_LENGTH, LENGTHS
+from .blocks import DEFAULT_LENGTH, EXTRA_BY_ID, EXTRAS, LENGTHS
 from .themes import CUSTOM, DEFAULT_THEME, THEMES, parse_hex
 
 OUTPUTS = ("pdf", "tg", "both", "tg_one")
@@ -21,7 +21,12 @@ class UserSettings:
     custom_color: str | None = None
     language: str = "auto"
     send_transcript: bool = False
+    extras: tuple[str, ...] = ()  # closing sections the user asked for, in the order of EXTRAS
     ask_raw: bool = False  # ask before each job whether to make a note or send only the transcript
+
+    def toggle_extra(self, extra_id: str) -> UserSettings:
+        chosen = set(self.extras) ^ ({extra_id} & EXTRA_BY_ID.keys())
+        return replace(self, extras=tuple(extra.id for extra in EXTRAS if extra.id in chosen))
 
     def to_dict(self) -> dict:
         return {
@@ -31,6 +36,7 @@ class UserSettings:
             "custom_color": self.custom_color,
             "language": self.language,
             "send_transcript": self.send_transcript,
+            "extras": list(self.extras),
             "ask_raw": self.ask_raw,
         }
 
@@ -53,6 +59,7 @@ class UserSettings:
             custom_color=custom_color,
             language=language if language in LANGUAGES else "auto",
             send_transcript=raw.get("send_transcript") is True,
+            extras=tuple(extra.id for extra in EXTRAS if extra.id in (raw.get("extras") or [])),
             ask_raw=raw.get("ask_raw") is True,
         )
 

@@ -25,7 +25,7 @@ class FakeModel:
     async def transcribe(self, audio, filename):
         return LONG_TRANSCRIPT
 
-    async def write(self, transcript, length, language="auto"):
+    async def write(self, transcript, length, language="auto", extras=()):
         self.language = language
         return _note()
 
@@ -66,7 +66,7 @@ def test_pipeline_refuses_tiny_text():
 
 def test_an_empty_note_is_an_error_not_a_blank_document():
     class Empty(FakeModel):
-        async def write(self, transcript, length, language="auto"):
+        async def write(self, transcript, length, language="auto", extras=()):
             return NoteDocument(title="Пусто")
 
     with pytest.raises(GeminiError, match="пустой конспект"):
@@ -83,7 +83,7 @@ def _button_data(markup):
 
 def test_every_menu_button_fits_telegram_callback_limit():
     settings = UserSettings(theme="custom", custom_color="#0f766e")
-    for view in ["main", "output", "length", "language", "theme"]:
+    for view in ["main", "output", "length", "language", "theme", "extras"]:
         _, markup = settings_view(PREMIUM, view, settings)
         for data in _button_data(markup):
             assert data is None or len(data.encode()) <= 64, data
@@ -220,7 +220,7 @@ def test_one_message_output_asks_for_the_short_length_and_fits_one_message():
     seen = {}
 
     class LengthModel(FakeModel):
-        async def write(self, transcript, length, language="auto"):
+        async def write(self, transcript, length, language="auto", extras=()):
             seen["length"] = length
             return _note("Главная идея. " * 10, 2)
 
@@ -252,3 +252,24 @@ def test_the_short_length_is_not_a_choice_the_user_can_save():
     assert Settings.from_dict({"output": "tg_one"}).output == "tg_one"
     _, markup = settings_view(PLAIN, "output", UserSettings(output="tg_one"))
     assert any("Одно короткое сообщение" in label for label in _labels(markup))
+
+
+def test_extras_reach_the_model_but_not_the_one_message_format():
+    seen = []
+
+    class Spy(FakeModel):
+        async def write(self, transcript, length, language="auto", extras=()):
+            seen.append(tuple(extras))
+            return _note()
+
+    settings = UserSettings(extras=("remember", "terms"))
+    _run(NotesPipeline(Spy()), settings, text=LONG_TRANSCRIPT)
+    _run(NotesPipeline(Spy()), UserSettings(output="tg_one", extras=("remember",)), text=LONG_TRANSCRIPT)
+    assert seen == [("remember", "terms"), ()]
+
+
+def test_extras_menu_marks_the_chosen_ones():
+    _, markup = settings_view(PLAIN, "extras", UserSettings(extras=("terms",)))
+    labels = _labels(markup)
+    assert "✅ Термины и определения" in labels and "❌ Что запомнить" in labels
+    assert "st:ext:questions" in _button_data(markup)
