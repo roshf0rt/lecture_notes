@@ -163,3 +163,14 @@ def gateway_attempts():
     from notes_bot.gateway import PIECE_ATTEMPTS
 
     return PIECE_ATTEMPTS
+
+
+def test_requests_for_a_file_in_other_wordings_are_junk_and_stripped():
+    from notes_bot.transcript import junk_reason, strip_requests
+
+    ask1 = "Пожалуйста, предоставьте аудиофайл или текст записи, которую нужно расшифровать."
+    ask2 = "Пожалуйста, прикрепите аудиофайл или видеозапись, которую необходимо расшифровать. Без исходного материала я не могу выполнить вашу просьбу."
+    assert junk_reason(ask1 + "\n\n" + ask1) and junk_reason(ask2)
+    real = "21 на 8. Так? И еще один способ, то есть мы могли, например, 3/8 домножить на два. " * 3
+    assert junk_reason(real) is None
+    assert strip_requests(f"{ask1}\n\n{real}\n\n{ask2}") == real.strip()

@@ -30,7 +30,7 @@ from .audio import (
     trim_silence,
 )
 from .gemini import AUTH, MODEL, OTHER, OVERLOADED, QUOTA, TRANSCRIBE_PROMPT, UNREACHABLE, GeminiError
-from .transcript import junk_reason
+from .transcript import junk_reason, strip_requests
 from .notes import SYSTEM_PROMPT, NoteDocument, build_user_message, note_schema
 
 log = logging.getLogger(__name__)
@@ -249,7 +249,7 @@ class GatewayClient:
             log.info("Gateway piece %d/%d: %d characters, attempt %d%s", number, total, len(text), attempt,
                      f", junk: {reason}" if reason else "")
             if reason is None:
-                return text
+                return strip_requests(text)
             if attempt < PIECE_ATTEMPTS:
                 await asyncio.sleep(PIECE_RETRY_DELAY)
         raise GeminiError(f"Поставщик ключа не распознал часть {number} из {total}: {reason}.", MODEL)
