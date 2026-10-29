@@ -49,14 +49,16 @@ from .menus import (
     settings_view,
     welcome,
 )
+from .gemini import GeminiError
 from .notes import document_text
 from .pipeline import NotesPipeline, Result, Source
-from .render_tg import plain_text
+from .render_pdf import render_pdf
+from .render_tg import fit_one_message, plain_text
 from .services import ADDED_OUTCOMES, SHARED, Services, add_keys, check_keys, edit, key_report, reply, services
 from .settings import SettingsStore, UserSettings
 from .storage import BotState, Options
-from .topics import suggest
-from .themes import CUSTOM, parse_hex
+from .topics import rank
+from .themes import CUSTOM, get_theme, parse_hex
 from .ui import Ui, html
 
 log = logging.getLogger(__name__)
@@ -612,7 +614,7 @@ async def _run_job(
         status = await reply(message, _queue_text(ui, ahead, any(item.is_audio for item in sources)))
         lock = s.locks.setdefault(user_id, asyncio.Lock())
         async with lock:
-            await _make_note(message, status, s, user_id, model, source, sources, ui, options, raw)
+            await _make_note(message, status, s, user_id, model, source, sources, ui, options, raw, context.bot)
     finally:
         s.queued[user_id] -= 1
         if s.queued[user_id] <= 0:
@@ -620,7 +622,7 @@ async def _run_job(
         s.publish_active()
 
 
-async def _make_note(message, status, s, user_id, model, source, sources, ui, options, raw=False) -> None:
+async def _make_note(message, status, s, user_id, model, source, sources, ui, options, raw=False, bot=None) -> None:
     settings = s.store.get(user_id)
     from_audio = any(item.is_audio for item in sources)
 
@@ -664,7 +666,7 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
         notes.append("на общем ключе")
     await _status(status, f"{ui.e('done')} Конспект готов" + (f" ({', '.join(notes)})" if notes else ""))
     await _send(message, result)
-    await _offer_topics(message, s, user_id, result)
+    await _offer_topics(message, bot, s, user_id, result)
 
 
 async def _status(status: Message, text: str) -> None:
@@ -683,32 +685,70 @@ def _file_name(title: str) -> str:
 
 
 POST_TTL = 3600
+MEMBERSHIP_TTL = 600
+MEMBER_STATUSES = ("creator", "administrator", "member", "restricted")
 
 
 @dataclass(frozen=True)
 class Post:
     created: float
     user_id: int
-    result: Result
+    result: Result  # already in the group's format: PDF and one short message
     targets: list[tuple[str, int, int]]  # (subject, chat id, topic id) in the order the buttons show them
 
 
-async def _offer_topics(message: Message, s: Services, user_id: int, result: Result) -> None:
-    """After the note reached the user's chat, offer to post it to a group topic. Nothing is sent without a tap."""
-    bindings = s.state.topics(user_id)
-    if not bindings:
+async def _is_member(bot, s: Services, chat_id: int, user_id: int) -> bool:
+    """Whether the user is in the group right now. Telegram answers; the answer is kept for a few minutes."""
+    now = time.time()
+    cached = s.membership.get((chat_id, user_id))
+    if cached is not None and now - cached[0] < MEMBERSHIP_TTL:
+        return cached[1]
+    try:
+        member = (await bot.get_chat_member(chat_id, user_id)).status in MEMBER_STATUSES
+    except TelegramError:
+        log.warning("Could not check membership of %s in %s", user_id, chat_id)
+        return False  # not cached: the next note asks again
+    s.membership[(chat_id, user_id)] = (now, member)
+    return member
+
+
+def _group_result(s: Services, user_id: int, result: Result) -> Result:
+    """What the group gets: the PDF and one short message, whatever format the user chose for the chat."""
+    settings = s.store.get(user_id)
+    options = s.options()
+    pdf = result.pdf
+    if pdf is None:
+        theme = get_theme(settings.theme, settings.custom_color)
+        pdf = render_pdf(result.document, theme)
+    if settings.output in ("both_one", "tg_one") and result.messages:
+        short = result.messages
+    else:
+        short = fit_one_message(result.document, premium=options.premium_emoji)
+    return Result(result.document, result.transcript, pdf=pdf, messages=short)
+
+
+async def _offer_topics(message: Message, bot, s: Services, user_id: int,
+                        result: Result) -> None:
+    """After the note reached the user's chat, offer the groups the user is in. Nothing is sent without a tap."""
+    groups = [group for group in s.state.groups_with_topics() if await _is_member(bot, s, group[0], user_id)]
+    if not groups:
         return
     ui = s.ui()
     now = time.time()
     s.posts = {token: post for token, post in s.posts.items() if now - post.created < POST_TTL}
-    ordered, matched = suggest([subject for subject, _, _ in bindings], document_text(result.document))
-    by_subject = {subject: (chat_id, thread_id) for subject, chat_id, thread_id in bindings}
-    targets = [(subject, *by_subject[subject]) for subject in ordered]
+    entries = [(subject, chat_id, thread_id, title)
+               for chat_id, title, topics in groups for subject, thread_id in topics]
+    order, matched = rank([subject for subject, _, _, _ in entries], document_text(result.document))
+    entries = [entries[index] for index in order]
+    targets = [(subject, chat_id, thread_id) for subject, chat_id, thread_id, _ in entries]
     token = secrets.token_hex(4)
-    s.posts[token] = Post(now, user_id, result, targets)
+    s.posts[token] = Post(now, user_id, _group_result(s, user_id, result), targets)
+    several = len(groups) > 1
     rows = []
-    for index, (subject, _, _) in enumerate(targets):
-        label = f"✅ {subject}" if index < matched else subject
+    for index, (subject, _, _, title) in enumerate(entries):
+        label = f"{subject} · {title}" if several else subject
+        if index < matched:
+            label = f"✅ {label}"
         rows.append([ui.button("list", label, f"tp:{token}:{index}", style="success" if index < matched else None)])
     rows.append([ui.button("no", "Не отправлять в группу", f"tp:{token}:x")])
     hint = ("Бот подобрал раздел по тексту, ✅ отмечен." if matched
@@ -733,6 +773,9 @@ async def on_topic_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await edit(query, f"{ui.e('no')} Не отправлено в группу.")
         return
     subject, chat_id, thread_id = post.targets[int(choice)]
+    if not await _is_member(context.bot, s, chat_id, post.user_id):
+        await edit(query, f"{ui.e('warning')} Вы больше не в этой группе, отправлять туда нельзя.")
+        return
     try:
         await _post_to_topic(context.bot, chat_id, thread_id, post.result)
     except TelegramError:
@@ -755,8 +798,14 @@ async def _post_to_topic(bot, chat_id: int, thread_id: int, result: Result) -> N
                                 message_thread_id=thread_id)
 
 
+def _group_owner_check(s: Services, message: Message, user_id: int) -> bool:
+    """The group's topics are set up by the one who first set them up. Others in the group only use them."""
+    owner = s.state.group_owner(message.chat.id)
+    return owner is None or owner == user_id
+
+
 async def on_bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """In a group topic: /bind Физика makes that topic the place for the user's physics notes."""
+    """In a group topic: /bind Физика makes that topic the place for physics notes of the group."""
     message = update.effective_message
     s = services(context)
     user_id = update.effective_user.id
@@ -764,37 +813,51 @@ async def on_bind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if message.chat.type not in ("group", "supergroup"):
         await reply(message, "Команда /bind нужна в группе, внутри раздела, который вы хотите привязать.")
         return
+    if not _group_owner_check(s, message, user_id):
+        await reply(message, "Разделы этой группы настраивает тот, кто их первым привязал.")
+        return
     if not subject:
         await reply(message, "Напишите название предмета: <code>/bind Физика</code>")
         return
     if message.message_thread_id is None:
         await reply(message, "Напишите /bind внутри самого раздела, а не в общем чате группы.")
         return
-    s.state.bind_topic(user_id, subject[:60], message.chat.id, message.message_thread_id)
+    s.state.claim_group(message.chat.id, getattr(message.chat, "title", None) or "", user_id)
+    s.state.bind_topic(message.chat.id, subject[:60], message.message_thread_id)
     await reply(message, f"{s.ui().e('ok')} Раздел привязан к предмету «{html(subject[:60])}». "
-                         "Конспекты по нему можно будет отправлять сюда.")
+                         "Конспекты по нему смогут отправлять все участники группы.")
 
 
 async def on_unbind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     s = services(context)
     subject = (message.text or "").partition(" ")[2].strip()
-    if s.state.unbind_topic(update.effective_user.id, subject):
+    if message.chat.type not in ("group", "supergroup"):
+        await reply(message, "Команду /unbind пишут в группе, у раздела которой надо снять предмет.")
+        return
+    if not _group_owner_check(s, message, update.effective_user.id):
+        await reply(message, "Разделы этой группы настраивает тот, кто их первым привязал.")
+        return
+    if s.state.unbind_topic(message.chat.id, subject):
         await reply(message, f"{s.ui().e('ok')} Предмет «{html(subject)}» отвязан от раздела.")
     else:
-        await reply(message, f"{s.ui().e('info')} Такого предмета нет. Список: /topics")
+        await reply(message, f"{s.ui().e('info')} Такого предмета в этой группе нет.")
 
 
 async def on_topics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     s = services(context)
-    bindings = s.state.topics(update.effective_user.id)
-    if not bindings:
-        await reply(message, "Разделов пока нет. Создайте их в группе с темами и напишите внутри каждого "
-                             "<code>/bind Название предмета</code>.")
+    user_id = update.effective_user.id
+    lines = []
+    for chat_id, title, topics in s.state.groups_with_topics():
+        if await _is_member(context.bot, s, chat_id, user_id):
+            subjects = ", ".join(html(subject) for subject, _ in topics)
+            lines.append(f"• <b>{html(title or 'группа')}</b>: {subjects}")
+    if not lines:
+        await reply(message, "Вы пока не состоите в группах с разделами. Когда вас добавят в такую группу, "
+                             "конспекты будут предлагаться её разделам.")
         return
-    lines = [f"• {html(subject)}" for subject, _, _ in bindings]
-    await reply(message, "<b>Ваши разделы:</b>\n" + "\n".join(lines) + "\n\nОтвязать: <code>/unbind Название</code>")
+    await reply(message, "<b>Группы с разделами, где вы состоите:</b>\n" + "\n".join(lines))
 
 
 async def _send(message: Message, result: Result) -> None:

@@ -90,9 +90,11 @@ class BotState:
                 CREATE TABLE IF NOT EXISTS options (name TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS whitelist (user_id INTEGER PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY);
-                CREATE TABLE IF NOT EXISTS topics (
-                    user_id INTEGER NOT NULL, subject TEXT NOT NULL, chat_id INTEGER NOT NULL, thread_id INTEGER NOT NULL,
-                    PRIMARY KEY (user_id, subject));
+                CREATE TABLE IF NOT EXISTS groups (
+                    chat_id INTEGER PRIMARY KEY, title TEXT NOT NULL DEFAULT '', owner_id INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS group_topics (
+                    chat_id INTEGER NOT NULL, subject TEXT NOT NULL, thread_id INTEGER NOT NULL,
+                    PRIMARY KEY (chat_id, subject));
                 CREATE TABLE IF NOT EXISTS agreements (user_id INTEGER PRIMARY KEY, version TEXT NOT NULL, accepted_at REAL NOT NULL);
                 """
             )
@@ -225,24 +227,39 @@ class BotState:
 
     # --- jobs ----------------------------------------------------------------------------
 
-    def topics(self, user_id: int) -> list[tuple[str, int, int]]:
-        """(subject, chat id, topic id) for each subject the user has bound to a group topic."""
-        rows = self._connection.execute(
-            "SELECT subject, chat_id, thread_id FROM topics WHERE user_id = ? ORDER BY subject", (user_id,)
-        ).fetchall()
-        return [(subject, chat_id, thread_id) for subject, chat_id, thread_id in rows]
+    def group_owner(self, chat_id: int) -> int | None:
+        row = self._connection.execute("SELECT owner_id FROM groups WHERE chat_id = ?", (chat_id,)).fetchone()
+        return row[0] if row else None
 
-    def bind_topic(self, user_id: int, subject: str, chat_id: int, thread_id: int) -> None:
+    def claim_group(self, chat_id: int, title: str, owner_id: int) -> None:
         with self._connection:
             self._connection.execute(
-                "INSERT OR REPLACE INTO topics (user_id, subject, chat_id, thread_id) VALUES (?, ?, ?, ?)",
-                (user_id, subject, chat_id, thread_id),
+                "INSERT OR IGNORE INTO groups (chat_id, title, owner_id) VALUES (?, ?, ?)", (chat_id, title[:100], owner_id)
             )
 
-    def unbind_topic(self, user_id: int, subject: str) -> bool:
+    def bind_topic(self, chat_id: int, subject: str, thread_id: int) -> None:
         with self._connection:
-            cursor = self._connection.execute("DELETE FROM topics WHERE user_id = ? AND subject = ?", (user_id, subject))
+            self._connection.execute(
+                "INSERT OR REPLACE INTO group_topics (chat_id, subject, thread_id) VALUES (?, ?, ?)", (chat_id, subject, thread_id)
+            )
+
+    def unbind_topic(self, chat_id: int, subject: str) -> bool:
+        with self._connection:
+            cursor = self._connection.execute(
+                "DELETE FROM group_topics WHERE chat_id = ? AND subject = ?", (chat_id, subject)
+            )
         return cursor.rowcount > 0
+
+    def groups_with_topics(self) -> list[tuple[int, str, list[tuple[str, int]]]]:
+        """Every group that has topics: (chat id, title, [(subject, topic id)])."""
+        rows = self._connection.execute(
+            "SELECT g.chat_id, g.title, t.subject, t.thread_id FROM groups g "
+            "JOIN group_topics t ON t.chat_id = g.chat_id ORDER BY g.chat_id, t.subject"
+        ).fetchall()
+        result: dict[int, tuple[str, list]] = {}
+        for chat_id, title, subject, thread_id in rows:
+            result.setdefault(chat_id, (title, []))[1].append((subject, thread_id))
+        return [(chat_id, title, topics) for chat_id, (title, topics) in result.items()]
 
     def agreed_version(self, user_id: int) -> str | None:
         row = self._connection.execute("SELECT version FROM agreements WHERE user_id = ?", (user_id,)).fetchone()

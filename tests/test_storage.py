@@ -70,14 +70,17 @@ def test_ban_whitelist_and_admins(tmp_path):
     assert not state.is_admin(7)
 
 
-def test_topic_bindings_are_per_user_and_replace_on_rebind(tmp_path):
+def test_topics_belong_to_the_group_and_rebinding_replaces_them(tmp_path):
     from notes_bot.storage import BotState, Options
 
     state = BotState(tmp_path / "bot.sqlite3", Options(model="m"))
-    state.bind_topic(5, "Физика", -100, 3)
-    state.bind_topic(5, "Физика", -200, 9)  # the same subject bound again, e.g. after the group became a supergroup
-    state.bind_topic(6, "Физика", -300, 1)
-    assert state.topics(5) == [("Физика", -200, 9)]
-    assert state.unbind_topic(5, "Физика") is True
-    assert state.unbind_topic(5, "Физика") is False
-    assert state.topics(6) == [("Физика", -300, 1)]
+    state.claim_group(-100, "Группа", 5)
+    state.claim_group(-100, "Другая", 9)  # the first owner stays
+    assert state.group_owner(-100) == 5
+    state.bind_topic(-100, "Физика", 3)
+    state.bind_topic(-100, "Физика", 9)  # bound again, e.g. the topic was recreated
+    state.bind_topic(-100, "Химия", 4)
+    assert state.groups_with_topics() == [(-100, "Группа", [("Физика", 9), ("Химия", 4)])]
+    assert state.unbind_topic(-100, "Физика") is True
+    assert state.unbind_topic(-100, "Физика") is False
+    assert state.groups_with_topics() == [(-100, "Группа", [("Химия", 4)])]
