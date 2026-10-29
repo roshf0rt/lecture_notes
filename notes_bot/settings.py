@@ -22,6 +22,7 @@ class UserSettings:
     blocks: tuple[str, ...] = DEFAULT_BLOCKS
     language: str = "auto"
     send_transcript: bool = False
+    ask_raw: bool = False  # ask before each job whether to make a note or send only the transcript
 
     def toggle_block(self, block_id: str) -> UserSettings:
         enabled = set(self.blocks) ^ {block_id}
@@ -36,6 +37,7 @@ class UserSettings:
             "blocks": list(self.blocks),
             "language": self.language,
             "send_transcript": self.send_transcript,
+            "ask_raw": self.ask_raw,
         }
 
     @classmethod
@@ -64,6 +66,7 @@ class UserSettings:
             blocks=blocks,
             language=language if language in LANGUAGES else "auto",
             send_transcript=raw.get("send_transcript") is True,
+            ask_raw=raw.get("ask_raw") is True,
         )
 
 

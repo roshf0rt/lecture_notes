@@ -196,6 +196,8 @@ async def on_settings_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif action == "preset" and args[0] in BLOCK_PRESETS:
         settings = replace(settings, blocks=BLOCK_PRESETS[args[0]])
         view = "blocks"
+    elif action == "raw":
+        settings = replace(settings, ask_raw=not settings.ask_raw)
     elif action == "reset":
         settings = UserSettings()
     s.store.save(user_id, settings)
@@ -442,7 +444,8 @@ async def _flush_later(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     pending: Pending | None = data.pop("pending", None)
     if pending is not None and time.time() - pending.created < PENDING_TTL:
         items = pending.items + items  # files sent while the question was open join it
-    if len(items) == 1:
+    asks_raw = services(context).store.get(update.effective_user.id).ask_raw and any(item.source.is_audio for item in items)
+    if len(items) == 1 and not asks_raw:
         await _run_job(update, context, [items[0].source])
         return
     await _ask_about_batch(update.effective_message, context, items)
@@ -458,12 +461,19 @@ async def _ask_about_batch(message: Message, context: ContextTypes.DEFAULT_TYPE,
     lines += [f"{number}. {html(item.label)}" for number, item in enumerate(items, start=1)]
     if dropped > 0:
         lines += ["", f"Беру первые {MAX_BATCH}, остальные {dropped} пришлите отдельно."]
-    lines += ["", "Это одна лекция по частям или разные? Части склеиваются в порядке отправки."]
-    keyboard = InlineKeyboardMarkup([
-        [ui.button("stack", "Одна лекция", f"bt:merge:{token}", style="success"),
-         ui.button("list", "Отдельные конспекты", f"bt:split:{token}", style="primary")],
-        [ui.button("no", "Отмена", f"bt:cancel:{token}")],
-    ])
+    rows = []
+    if len(items) > 1:
+        lines += ["", "Это одна лекция по частям или разные? Части склеиваются в порядке отправки."]
+        rows.append([ui.button("stack", "Одна лекция", f"bt:merge:{token}", style="success"),
+                     ui.button("list", "Отдельные конспекты", f"bt:split:{token}", style="primary")])
+    else:
+        lines += ["", "Сделать конспект?"]
+        rows.append([ui.button("stack", "Сделать конспект", f"bt:merge:{token}", style="success")])
+    if any(item.source.is_audio for item in items):
+        lines += ["Или пришлю только текст расшифровки записей, без конспекта."]
+        rows.append([ui.button("transcript", "Только расшифровка", f"bt:raw:{token}")])
+    rows.append([ui.button("no", "Отмена", f"bt:cancel:{token}")])
+    keyboard = InlineKeyboardMarkup(rows)
     await reply(message, "\n".join(lines), keyboard)
 
 
@@ -482,6 +492,9 @@ async def on_batch_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if action == "merge":
         await edit(query, f"{ui.e('stack')} Делаю один конспект из {count} частей.")
         await _run_job(update, context, [item.source for item in pending.items])
+    elif action == "raw":
+        await edit(query, f"{ui.e('transcript')} Расшифровываю, пришлю только текст.")
+        await _run_job(update, context, [item.source for item in pending.items], raw=True)
     elif action == "split":
         await edit(query, f"{ui.e('list')} Делаю {count} отдельных конспектов, по очереди.")
         for item in pending.items:
@@ -526,6 +539,7 @@ async def _run_job(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     sources: list[Source],
+    raw: bool = False,
 ) -> None:
     """Make one note from the sources. A user's notes run one after another, in the order they were sent."""
     message = update.effective_message
@@ -552,7 +566,7 @@ async def _run_job(
         status = await reply(message, _queue_text(ui, ahead, any(item.is_audio for item in sources)))
         lock = s.locks.setdefault(user_id, asyncio.Lock())
         async with lock:
-            await _make_note(message, status, s, user_id, model, source, sources, ui, options)
+            await _make_note(message, status, s, user_id, model, source, sources, ui, options, raw)
     finally:
         s.queued[user_id] -= 1
         if s.queued[user_id] <= 0:
@@ -560,7 +574,7 @@ async def _run_job(
         s.publish_active()
 
 
-async def _make_note(message, status, s, user_id, model, source, sources, ui, options) -> None:
+async def _make_note(message, status, s, user_id, model, source, sources, ui, options, raw=False) -> None:
     settings = s.store.get(user_id)
     from_audio = any(item.is_audio for item in sources)
 
@@ -577,6 +591,11 @@ async def _make_note(message, status, s, user_id, model, source, sources, ui, op
     started = time.monotonic()
     async with s.slots:
         try:
+            if raw:
+                await NotesPipeline(model).read(sources=sources, progress=progress, on_transcript=keep_transcript)
+                s.state.log_job(user_id, kind, True, time.monotonic() - started)
+                await _status(status, f"{ui.e('done')} Расшифровка готова")
+                return
             result = await NotesPipeline(model).run(
                 settings, progress=progress, sources=sources, premium=options.premium_emoji,
                 on_transcript=keep_transcript,

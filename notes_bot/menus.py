@@ -175,6 +175,7 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
             f"{ui.e('language')} Язык: <b>{LANGUAGE_TITLES[settings.language]}</b>",
             f"{ui.e('theme')} Оформление PDF: <b>{html(_theme_name(settings))}</b>",
             f"{ui.e('blocks')} Блоки: <b>{len(settings.blocks)} из {len(BLOCKS)}</b>",
+            f"{ui.e('transcript')} Спрашивать про «только текст»: <b>{'да' if settings.ask_raw else 'нет'}</b>",
         ]
     )
     rows = [
@@ -182,6 +183,7 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
          ui.button("length", "Длина", "st:menu:length")],
         [ui.button("language", "Язык", "st:menu:language"), ui.button("theme", "Оформление", "st:menu:theme")],
         [ui.button("blocks", "Блоки конспекта", "st:menu:blocks")],
+        [ui.button("transcript", f"Спрашивать про «только текст»: {'вкл' if settings.ask_raw else 'выкл'}", "st:raw")],
         [ui.button("reset", "Сбросить", "st:reset", style="danger"),
          ui.button("ok", "Готово", "st:close", style="success")],
     ]

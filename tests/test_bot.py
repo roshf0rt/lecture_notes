@@ -335,7 +335,7 @@ def test_files_sent_together_bring_one_question(tmp_path):
     assert "1. Голосовое, 1:15" in question["text"] and "2. part2.aac" in question["text"]
     assert not h.calls  # nothing is transcribed before the answer
     data = [button.callback_data for row in question["reply_markup"].inline_keyboard for button in row]
-    assert [item.split(":")[1] for item in data] == ["merge", "split", "cancel"]
+    assert [item.split(":")[1] for item in data] == ["merge", "split", "raw", "cancel"]
 
 
 def _answer(h, user_id, question, action):
@@ -731,3 +731,26 @@ def test_transcript_file_arrives_even_when_writing_the_note_fails(tmp_path):
     assert "неверном формате" in message.edits[-1]
     files = [reply["filename"] for reply in message.replies if "document" in reply]
     assert files == ["Расшифровка.txt"]
+
+
+def test_raw_button_sends_only_the_transcript(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    question = _question(h, 5, _two_recordings())
+    _, message = _answer(h, 5, question, "raw")
+    assert [call for call in h.calls if call[0] == "write"] == []
+    files = [reply["filename"] for reply in message.replies if "document" in reply]
+    assert files == ["Расшифровка.txt"]
+    assert "Расшифровка готова" in message.edits[-1]
+
+
+def test_single_recording_is_only_asked_about_when_the_setting_is_on(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    h.tap(5, "st:raw", on_settings_button)
+    assert h.services.store.get(5).ask_raw is True
+    question = _question(h, 5, _two_recordings()[:1])
+    assert "Только расшифровка" in str(question["reply_markup"])
+    assert [call for call in h.calls if call[0] == "write"] == []
+    h.tap(5, "st:raw", on_settings_button)
+    assert h.services.store.get(5).ask_raw is False

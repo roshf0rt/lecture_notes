@@ -72,6 +72,41 @@ class NotesPipeline:
         on_transcript: Callable[[str], Awaitable[None]] | None = None,
     ) -> Result:
         """Make one note. Several sources are read in order and treated as parts of one lecture."""
+        text = await self.read(sources, text=text, audio=audio, audio_name=audio_name, audio_mime=audio_mime,
+                               progress=progress, on_transcript=on_transcript)
+        if len(text.strip()) < MIN_TEXT_CHARS:
+            raise GeminiError("В материале слишком мало текста для конспекта.")
+        if len(text) > MAX_TEXT_CHARS:
+            raise GeminiError("Материал слишком длинный. Разбейте его на несколько частей.")
+
+        await progress("writing")
+        length = ONE_MESSAGE_LENGTH_ID if settings.output == "tg_one" else settings.length
+        written = await self._model.write(text, settings.blocks, length, settings.language)
+        document = written.only(settings.blocks)
+
+        await progress("rendering")
+        if settings.output == "tg_one":
+            return Result(document, text, messages=fit_one_message(document, premium=premium))
+        pdf = messages = None
+        if settings.output in ("pdf", "both"):
+            theme = get_theme(settings.theme, settings.custom_color)
+            pdf = await asyncio.to_thread(render_pdf, document, theme)
+        if settings.output in ("tg", "both"):
+            messages = render_messages(document, premium=premium)
+        return Result(document, text, pdf=pdf, messages=messages)
+
+    async def read(
+        self,
+        sources: list[Source] | None = None,
+        *,
+        progress: Progress,
+        text: str | None = None,
+        audio: bytes | None = None,
+        audio_name: str | None = None,
+        audio_mime: str | None = None,
+        on_transcript: Callable[[str], Awaitable[None]] | None = None,
+    ) -> str:
+        """The text of all sources in order: recordings are transcribed, texts are taken as they are."""
         if sources is None:
             sources = [Source(text=text, audio=audio, name=audio_name, mime=audio_mime)]
         recordings = sum(source.is_audio for source in sources)
@@ -93,33 +128,12 @@ class NotesPipeline:
             else:
                 texts.append(source.text or "")
         text = _join(texts) if len(sources) > 1 else texts[0]
-        reason = junk_reason(text) if any(source.is_audio for source in sources) else None
+        reason = junk_reason(text) if recordings else None
         if reason:
             raise GeminiError(f"Расшифровка не получилась: {reason}. Попробуйте ещё раз или добавьте ключ Google.")
-
         if spoken and on_transcript is not None:  # handed over before the note is written, so a failure later loses nothing
             await on_transcript(_join(spoken) if len(spoken) > 1 else spoken[0])
-
-        if len(text.strip()) < MIN_TEXT_CHARS:
-            raise GeminiError("В материале слишком мало текста для конспекта.")
-        if len(text) > MAX_TEXT_CHARS:
-            raise GeminiError("Материал слишком длинный. Разбейте его на несколько частей.")
-
-        await progress("writing")
-        length = ONE_MESSAGE_LENGTH_ID if settings.output == "tg_one" else settings.length
-        written = await self._model.write(text, settings.blocks, length, settings.language)
-        document = written.only(settings.blocks)
-
-        await progress("rendering")
-        if settings.output == "tg_one":
-            return Result(document, text, messages=fit_one_message(document, premium=premium))
-        pdf = messages = None
-        if settings.output in ("pdf", "both"):
-            theme = get_theme(settings.theme, settings.custom_color)
-            pdf = await asyncio.to_thread(render_pdf, document, theme)
-        if settings.output in ("tg", "both"):
-            messages = render_messages(document, premium=premium)
-        return Result(document, text, pdf=pdf, messages=messages)
+        return text
 
     async def _transcribe(self, source: Source) -> str:
         try:
