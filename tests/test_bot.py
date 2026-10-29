@@ -761,3 +761,31 @@ def test_single_recording_is_only_asked_about_when_the_setting_is_on(tmp_path):
     assert [call for call in h.calls if call[0] == "write"] == []
     h.tap(5, "st:raw", on_settings_button)
     assert h.services.store.get(5).ask_raw is False
+
+
+def _pdf(text: str) -> bytes:
+    from weasyprint import HTML
+
+    return HTML(string=f"<p>{text}</p>").write_pdf()
+
+
+def test_pdf_with_text_becomes_the_lecture(tmp_path):
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    body = _pdf(LONG_TEXT)
+    message = FakeMessage(document=_document(body, "lecture.pdf", "application/pdf"))
+    h.run(on_media, 5, message=message)
+    assert ("write", KEY, "auto") in h.calls
+    assert "Конспект готов" in message.edits[-1]
+
+
+def test_scanned_pdf_without_text_is_refused(tmp_path):
+    from weasyprint import HTML
+
+    h = Harness(tmp_path)
+    h.services.keys.add(5, KEY)
+    body = HTML(string="<p></p>").write_pdf()
+    message = FakeMessage(document=_document(body, "scan.pdf", "application/pdf"))
+    h.run(on_media, 5, message=message)
+    assert "похоже, это скан" in message.replies[-1]["text"]
+    assert [call for call in h.calls if call[0] == "write"] == []

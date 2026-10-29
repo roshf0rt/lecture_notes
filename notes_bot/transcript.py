@@ -31,6 +31,9 @@ MAX_REPEATED_SHARE = 0.5
 # Words and word pairs ("за- не") looping on one line, as a model does when it degenerates.
 MIN_WORDS_FOR_LOOP = 40
 MAX_UNIQUE_WORD_SHARE = 0.2
+# A loop that only covers part of a recording: any window of this many words that is mostly repeats.
+WINDOW_WORDS = 60
+MAX_WINDOW_UNIQUE_SHARE = 0.25
 MAX_TOP_BIGRAM_SHARE = 0.3
 
 
@@ -50,7 +53,13 @@ def junk_reason(text: str) -> str | None:
         pairs = Counter(zip(words, words[1:]))
         if pairs.most_common(1)[0][1] / (len(words) - 1) > MAX_TOP_BIGRAM_SHARE:
             return "расшифровка состоит из повторяющихся слов"
+    if any(_looping(words[start:start + WINDOW_WORDS]) for start in range(0, max(1, len(words) - WINDOW_WORDS + 1), 10)):
+        return "в расшифровке есть участок, где модель повторяет одни и те же слова"
     return None
+
+
+def _looping(window: list[str]) -> bool:
+    return len(window) == WINDOW_WORDS and len(set(window)) / len(window) < MAX_WINDOW_UNIQUE_SHARE
 
 
 def strip_requests(text: str) -> str:

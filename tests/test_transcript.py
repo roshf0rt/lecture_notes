@@ -166,3 +166,13 @@ def test_a_loop_on_one_line_is_not_a_transcript():
     assert junk_reason(loop.strip())
     real = "Событийный маркетинг строится на опыте участников, и мероприятие становится каналом для бренда. " * 4
     assert junk_reason(real) is None
+
+
+def test_a_loop_at_the_start_then_normal_text_is_still_not_a_transcript():
+    lecture = (
+        "Событийный маркетинг строится на опыте участников и встрече с брендом. " * 2
+        + "за- не " * 60
+        + " Реклама пытается изменить решение человека, а информация сообщает факт. "
+        "Участник запоминает не баннер, а собственное впечатление от происходящего. " * 6
+    )
+    assert junk_reason(lecture)

@@ -30,6 +30,7 @@ from .config import Config
 from .gateway import GatewayClient, RequestLimiter
 from .gemini import GeminiClient, GeminiError
 from .keys import KEY_PATTERN, KeyVault, is_gateway_key
+from .pdf_text import NoTextError, pdf_text
 from .menus import (
     AI_STUDIO,
     BLOCK_PRESETS,
@@ -333,6 +334,10 @@ def _attachment(message: Message) -> tuple[object, str | None, str | None] | Non
     return None
 
 
+def _is_pdf(name: str | None, mime: str | None) -> bool:
+    return (name or "").lower().endswith(".pdf") or (mime or "").lower() == "application/pdf"
+
+
 def _decode(data: bytes) -> str:
     for encoding in ("utf-8-sig", "cp1251"):
         try:
@@ -402,6 +407,8 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                              f"Telegram не даёт боту его скачать. {hint}")
         return
 
+    is_pdf = _is_pdf(name, mime)
+    is_text = (name or "").lower().endswith(TEXT_EXTENSIONS) or (mime or "").startswith("text/plain")
     # While a download runs, nobody flushes the batch: the file may belong to it.
     data = context.user_data
     data["receiving"] = data.get("receiving", 0) + 1
@@ -410,7 +417,7 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         file = await attachment.get_file(read_timeout=FILE_TIMEOUT)
         path = _local_path(file)
-        if path is None or (name or "").lower().endswith(TEXT_EXTENSIONS) or (mime or "").startswith("text/plain"):
+        if path is None or is_text or is_pdf:
             body = bytes(await file.download_as_bytearray())
             path = None
     except TelegramError:
@@ -422,7 +429,14 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if body is None and path is None:
         await reply(message, f"{ui.e('warning')} Не получилось скачать файл. Пришлите его ещё раз.")
-    elif (name or "").lower().endswith(TEXT_EXTENSIONS) or (mime or "").startswith("text/plain"):
+    elif is_pdf and body is not None:
+        try:
+            text = await asyncio.to_thread(pdf_text, body)
+        except NoTextError:
+            await reply(message, f"{ui.e('warning')} В PDF нет текста, похоже, это скан. Пришлите текст или запись.")
+        else:
+            data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=text), name or "PDF"))
+    elif is_text:
         data.setdefault("batch", []).append(Incoming(message.message_id, Source(text=_decode(body)), name or "Текст"))
     elif not message.document or is_media(name, mime) or sniff(body if body is not None else _head(path)):
         # A document without a telling name or type may still be a recording: the header decides.
