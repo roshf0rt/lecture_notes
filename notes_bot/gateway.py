@@ -21,8 +21,8 @@ log = logging.getLogger(__name__)
 
 GATEWAY_URL = "https://api.aikeysforyou.com/v1"
 MAX_OUTPUT_TOKENS = 16_000
-# The supplier is slow on long recordings and the request times out, so long audio is cut into pieces.
-SEGMENT_SECONDS = 20 * 60
+# The supplier is slow on long recordings and requests time out, so long audio is cut into short pieces.
+SEGMENT_SECONDS = 10 * 60
 REQUEST_TIMEOUT = 300.0
 BAD_FORMAT = "Конспект получился в неверном формате. Попробуйте ещё раз."
 
@@ -90,7 +90,8 @@ class GatewayClient:
                 json={"model": self._model, "messages": messages, "max_tokens": max_tokens, "temperature": 0},
             )
         except httpx.HTTPError as error:
-            log.warning("Gateway request failed: %s", error)
+            # Timeouts often have an empty message, so the type is logged too.
+            log.warning("Gateway request failed: %s %r", type(error).__name__, str(error))
             # Timeouts and dropped connections: this key is skipped for a while, another key may work.
             raise GeminiError("Не получилось связаться с поставщиком ключа. Попробуйте позже.", UNREACHABLE) from error
         if response.status_code != 200:
