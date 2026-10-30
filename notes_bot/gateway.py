@@ -45,6 +45,9 @@ PIECE_GAP = 3.0  # pause between the pieces of one recording
 MAX_PIECE_SECONDS = 15 * 60
 REQUEST_TIMEOUT = 300.0
 NOTE_ATTEMPTS = 2
+# The supplier now and then drops a request or never answers it, while the next one goes through.
+CONNECTION_ATTEMPTS = 3
+RECONNECT_DELAY = 3.0
 BAD_FORMAT = "Конспект получился в неверном формате. Попробуйте ещё раз."
 
 
@@ -178,18 +181,22 @@ class GatewayClient:
 
     async def _post(self, messages: list[dict], max_tokens: int) -> tuple[str, bool]:
         """Returns the reply text and whether it was cut off by the length limit."""
-        try:
-            async with self._limiter if self._limiter is not None else contextlib.nullcontext():
-                response = await self._http.post(
-                    f"{self._url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self._api_key}"},
-                    json={"model": self._model, "messages": messages, "max_tokens": max_tokens, "temperature": 0, "stream": False},
-                )
-        except httpx.HTTPError as error:
-            # Timeouts often have an empty message, so the type is logged too.
-            log.warning("Gateway request failed: %s %r", type(error).__name__, str(error))
-            # Timeouts and dropped connections: this key is skipped for a while, another key may work.
-            raise GeminiError("Не получилось связаться с поставщиком ключа. Попробуйте позже.", UNREACHABLE) from error
+        for attempt in range(1, CONNECTION_ATTEMPTS + 1):
+            try:
+                async with self._limiter if self._limiter is not None else contextlib.nullcontext():
+                    response = await self._http.post(
+                        f"{self._url}/chat/completions",
+                        headers={"Authorization": f"Bearer {self._api_key}"},
+                        json={"model": self._model, "messages": messages, "max_tokens": max_tokens, "temperature": 0, "stream": False},
+                    )
+                break
+            except httpx.HTTPError as error:
+                # Timeouts often have an empty message, so the type is logged too.
+                log.warning("Gateway request failed, attempt %d: %s %r", attempt, type(error).__name__, str(error))
+                if attempt == CONNECTION_ATTEMPTS:
+                    # Timeouts and dropped connections: this key is skipped for a while, another key may work.
+                    raise GeminiError("Не получилось связаться с поставщиком ключа. Попробуйте позже.", UNREACHABLE) from error
+                await asyncio.sleep(RECONNECT_DELAY * attempt)
         if response.status_code != 200:
             raise _classify(response)
         if response.text.lstrip().startswith("data:"):

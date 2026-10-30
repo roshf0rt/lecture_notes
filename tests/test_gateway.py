@@ -297,3 +297,26 @@ def test_note_with_nulls_is_accepted_and_bad_reply_is_asked_again():
     document = asyncio.run(_client(handler).write("т " * 50, "medium"))
     assert document.title == "Реклама" and len(requests) == 2
     assert "Ответ не подошёл" in _seen(requests)[1]["messages"][-1]["content"]
+
+
+def test_a_dropped_request_is_sent_again_and_only_three_drops_give_up(monkeypatch):
+    import notes_bot.gateway as gateway
+
+    monkeypatch.setattr(gateway, "RECONNECT_DELAY", 0)
+    tries = []
+
+    def flaky(request):
+        tries.append(1)
+        if len(tries) < 3:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        return _reply("ok")
+
+    assert asyncio.run(_client(flaky)._post([{"role": "user", "content": "x"}], 16))[0] == "ok"
+    assert len(tries) == 3
+
+    def dead(request):
+        raise httpx.ReadTimeout("")
+
+    with pytest.raises(GeminiError) as caught:
+        asyncio.run(_client(dead)._post([{"role": "user", "content": "x"}], 16))
+    assert caught.value.kind == "unreachable"
