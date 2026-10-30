@@ -2,6 +2,8 @@
 so nothing is retyped or lost. If the model's answer is unusable, the text is cut into equal parts instead."""
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 
 # A topic shorter than this is not worth a note of its own: it joins the topic before it.
@@ -32,6 +34,18 @@ class Part:
 def paragraphs_of(text: str) -> list[str]:
     """Every non-empty line is a paragraph, and the model points at paragraphs, so a topic can start anywhere."""
     return [line.strip() for line in text.split("\n") if line.strip()]
+
+
+def pieces(text: str, limit: int) -> list[str]:
+    """The text cut into pieces of about limit characters, at paragraph ends, or sentence ends inside a huge paragraph."""
+    blocks: list[str] = []
+    for paragraph in paragraphs_of(text):
+        if len(paragraph) <= limit:
+            blocks.append(paragraph)
+            continue
+        sentences = re.split(r"(?<=[.!?…])\s+", paragraph)
+        blocks.extend(" ".join(chunk.split("\n\n")) for chunk in _chunks(sentences, limit))
+    return _chunks(blocks, limit)
 
 
 def marked(paragraphs: list[str]) -> str:

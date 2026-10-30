@@ -281,11 +281,11 @@ class GatewayClient:
             raise GeminiError("Не получилось разбить материал на темы.") from error
         return data if isinstance(data, list) else []
 
-    async def write(self, transcript: str, length_id: str, language: str = "auto", extras=()) -> NoteDocument:
+    async def write(self, transcript: str, length_id: str, language: str = "auto", extras=(), part: str = "") -> NoteDocument:
         schema = json.dumps(note_schema(), ensure_ascii=False)
         messages = [
             {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nОтвет — только один JSON-объект по этой схеме, без пояснений и без обрамления в ```:\n{schema}"},
-            {"role": "user", "content": build_user_message(transcript, length_id, language, extras)},
+            {"role": "user", "content": build_user_message(transcript, length_id, language, extras, part)},
         ]
         problem = ""
         for attempt in range(1, NOTE_ATTEMPTS + 1):

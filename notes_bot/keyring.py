@@ -167,5 +167,7 @@ class RotatingModel:
     async def outline(self, marked_text: str) -> list[dict]:
         return await self._call(lambda client: client.outline(marked_text))
 
-    async def write(self, transcript: str, length_id: str, language: str = "auto", extras=()) -> NoteDocument:
+    async def write(self, transcript: str, length_id: str, language: str = "auto", extras=(), part: str = "") -> NoteDocument:
+        if part:
+            return await self._call(lambda client: client.write(transcript, length_id, language, extras, part))
         return await self._call(lambda client: client.write(transcript, length_id, language, extras))

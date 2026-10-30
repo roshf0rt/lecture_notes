@@ -147,11 +147,13 @@ class GeminiClient:
             raise GeminiError("Не получилось разбить материал на темы.") from error
         return data if isinstance(data, list) else []
 
-    async def write(self, transcript: str, length_id: str, language: str = "auto", extras: Iterable[str] = ()) -> NoteDocument:
+    async def write(
+        self, transcript: str, length_id: str, language: str = "auto", extras: Iterable[str] = (), part: str = "",
+    ) -> NoteDocument:
         async with _friendly_errors():
             response = await self._client.aio.models.generate_content(
                 model=self._model,
-                contents=build_user_message(transcript, length_id, language, extras),
+                contents=build_user_message(transcript, length_id, language, extras, part),
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     response_mime_type="application/json",

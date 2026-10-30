@@ -122,3 +122,60 @@ def test_without_merging_every_topic_the_model_found_keeps_its_own_note():
     raw = [{"title": "Первая", "from": 0}, {"title": "Вторая", "from": 1}, {"title": "Третья", "from": 2}]
     assert [part.title for part in plan(raw, blocks, merge=False)] == ["Первая", "Вторая", "Третья"]
     assert [part.title for part in plan(raw, blocks)] == ["Первая"]
+
+
+def test_pieces_cut_at_paragraphs_and_inside_a_huge_paragraph_at_sentences():
+    from notes_bot.outline import pieces
+
+    huge = " ".join(f"Предложение номер {number} о репутации." for number in range(400))
+    text = "Короткий абзац.\n" + huge + "\nПоследний абзац."
+    chunks = pieces(text, 3000)
+    assert len(chunks) > 3
+    assert all(len(chunk) <= 3100 for chunk in chunks)
+    assert "Предложение номер 399 о репутации." in chunks[-1] or "Предложение номер 399 о репутации." in chunks[-2]
+    assert "".join(chunks).replace("\n", "").replace(" ", "") == text.replace("\n", "").replace(" ", "")
+
+
+class PiecewiseModel(SplittingModel):
+    def __init__(self):
+        super().__init__()
+        self.calls: list[tuple[str, str, tuple]] = []
+
+    async def write(self, transcript, length_id, language="auto", extras=(), part=""):
+        self.calls.append((length_id, part, tuple(extras)))
+        if length_id == "closing":
+            return NoteDocument(title="Вся лекция", main_idea="Общая идея.", sections=[{"heading": "Что запомнить", "elements": [
+                {"type": "checklist", "items": ["главное"]}]}] if extras else [])
+        return NoteDocument(title=f"Часть {part}", main_idea="Идея части.", sections=[{"heading": f"Раздел {part}", "elements": [
+            {"type": "paragraph", "text": transcript[:50]}]}])
+
+
+def test_a_long_lecture_in_maximum_detail_is_written_in_pieces_and_joined():
+    text = "\n".join(f"Абзац {number}: репутация складывается из мнений разных аудиторий и их опыта." for number in range(700))
+    model = PiecewiseModel()
+    result = _run_parts(model, UserSettings(output="pdf", length="max", extras=("remember",)), text=text)[0]
+    pieces_written = [call for call in model.calls if call[0] == "max"]
+    assert len(pieces_written) > 1 and all(call[2] == () for call in pieces_written)  # extras only once, at the end
+    assert model.calls[-1] == ("closing", "", ("remember",))
+    assert result.document.title == "Вся лекция" and result.document.main_idea == "Общая идея."
+    assert [s.heading for s in result.document.sections] == [
+        *(f"Раздел {n} из {len(pieces_written)}" for n in range(1, len(pieces_written) + 1)), "Что запомнить"]
+
+
+def test_a_short_lecture_or_a_shorter_length_is_written_in_one_go():
+    text = "\n".join(f"Абзац {number}: репутация складывается из мнений разных аудиторий и их опыта." for number in range(700))
+    model = PiecewiseModel()
+    _run_parts(model, UserSettings(output="pdf", length="long"), text=text)
+    assert [call[0] for call in model.calls] == ["long"]
+    model = PiecewiseModel()
+    _run_parts(model, UserSettings(output="pdf", length="max"), text=text[:10_000])
+    assert [call[0] for call in model.calls] == ["max"]
+
+
+def test_the_note_is_asked_to_be_at_least_a_share_of_the_material():
+    from notes_bot.notes import build_user_message
+
+    message = build_user_message("слово " * 10_000, "max")
+    assert "не короче 24000 знаков" in message
+    assert "не короче" not in build_user_message("слово " * 10_000, "short")
+    assert "часть 2 из 5" in build_user_message("текст", "full", part="2 из 5")

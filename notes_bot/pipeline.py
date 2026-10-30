@@ -8,19 +8,24 @@ from pathlib import Path
 from typing import Protocol
 
 from .audio import AudioError, prepare
-from .blocks import ONE_MESSAGE_LENGTH_ID
+from .blocks import CLOSING_LENGTH_ID, ONE_MESSAGE_LENGTH_ID
 from .gemini import INLINE_LIMIT_BYTES, GeminiError
-from .notes import NoteDocument, document_text
+from .notes import NoteDocument, Section, document_text
 from .render_pdf import render_pdf
 from .transcript import junk_reason
 from .render_tg import fit_one_message, render_messages
 from .settings import UserSettings
-from .outline import SPLIT_CHARS, Part, marked, paragraphs_of, plan
+from .outline import SPLIT_CHARS, Part, marked, paragraphs_of, pieces, plan
 from .themes import get_theme
 
 log = logging.getLogger(__name__)
 MIN_TEXT_CHARS = 100
 MAX_TEXT_CHARS = 400_000
+# In these lengths a model asked for a long note in one go still shortens it a lot, so longer material
+# is written piece by piece and the pieces are joined into one note.
+PIECEWISE_LENGTHS = ("max", "full")
+PIECE_CHARS = 15_000
+PIECES_AT_ONCE = 3
 # Called with a stage name and, for several recordings, which one is being read ("2 из 3").
 Progress = Callable[..., Awaitable[None]]
 
@@ -50,7 +55,9 @@ class Model(Protocol):
 
     async def transcribe(self, audio: bytes, filename: str) -> str: ...
 
-    async def write(self, transcript: str, length_id: str, language: str = "auto", extras: tuple[str, ...] = ()) -> NoteDocument: ...
+    async def write(
+        self, transcript: str, length_id: str, language: str = "auto", extras: tuple[str, ...] = (), part: str = "",
+    ) -> NoteDocument: ...
 
     async def outline(self, marked_text: str) -> list[dict]: ...
 
@@ -130,7 +137,10 @@ class NotesPipeline:
         await progress("writing")
         length = ONE_MESSAGE_LENGTH_ID if settings.output == "tg_one" else settings.length
         extras = () if settings.output == "tg_one" else settings.extras  # one message has no room for them
-        document = await self._model.write(text, length, settings.language, extras)
+        if length in PIECEWISE_LENGTHS and len(text) > PIECE_CHARS * 1.3:
+            document = await self._write_in_pieces(text, length, settings.language, extras)
+        else:
+            document = await self._model.write(text, length, settings.language, extras)
         if not document.sections and not document.main_idea:
             raise GeminiError("Модель вернула пустой конспект. Попробуйте ещё раз.")
 
@@ -146,6 +156,27 @@ class NotesPipeline:
         if settings.output in ("tg", "both"):
             messages = render_messages(document, premium=premium)
         return Result(document, text, pdf=pdf, messages=messages)
+
+    async def _write_in_pieces(self, text: str, length: str, language: str, extras: tuple[str, ...]) -> NoteDocument:
+        chunks = pieces(text, PIECE_CHARS)
+        gate = asyncio.Semaphore(PIECES_AT_ONCE)
+
+        async def one(number: int, chunk: str) -> NoteDocument:
+            async with gate:
+                return await self._model.write(chunk, length, language, (), part=f"{number} из {len(chunks)}")
+
+        written = await asyncio.gather(*(one(number, chunk) for number, chunk in enumerate(chunks, start=1)))
+        sections: list[Section] = [section for document in written for section in document.sections]
+        joined = NoteDocument(title=written[0].title, icon=written[0].icon, main_idea=written[0].main_idea, sections=sections)
+        try:
+            closing = await self._model.write(document_text(joined), CLOSING_LENGTH_ID, language, extras)
+        except GeminiError:
+            log.warning("No title and closing sections for a note written in pieces; keeping the first piece's")
+            return joined
+        return NoteDocument(
+            title=closing.title if closing.title != "Конспект" else joined.title, icon=closing.icon, main_idea=closing.main_idea or joined.main_idea,
+            sections=[*sections, *(closing.sections if extras else [])],
+        )
 
     async def _short_message(self, document: NoteDocument, language: str, premium: bool) -> list[str]:
         """The full note stays in the PDF; the chat gets a short version of it, written from the note itself."""

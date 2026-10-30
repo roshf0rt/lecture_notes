@@ -217,7 +217,10 @@ LANGUAGE_RULES = {
 }
 
 
-def build_user_message(transcript: str, length_id: str, language: str = "auto", extras: Iterable[str] = ()) -> str:
+def build_user_message(
+    transcript: str, length_id: str, language: str = "auto", extras: Iterable[str] = (), part: str = "",
+) -> str:
+    """part is set when a long lecture is written piece by piece, e.g. "3 из 7"."""
     length = LENGTH_BY_ID[length_id]
     material = transcript.replace("</material>", "")
     chosen = set(extras)
@@ -227,9 +230,22 @@ def build_user_message(transcript: str, length_id: str, language: str = "auto", 
         + "\n".join(f"- {text}" for text in wanted) + "\n\n"
         if wanted else ""
     )
+    size = (
+        f"Объём материала — {len(material)} знаков. Конспект должен быть не короче {round(len(material) * length.share, -2):.0f} "
+        "знаков текста. Если выходит короче, значит, ты выбросил содержание: верни его.\n\n"
+        if length.share and len(material) >= 2000 else ""
+    )
+    piece = (
+        f"Это часть {part} одной длинной лекции; остальные части конспектируются отдельно и потом склеиваются. "
+        "Сделай разделы только по этой части, по порядку. В title и main_idea напиши о том, что в этой части. "
+        "Не добавляй вступлений, итогов и выводов по всей лекции.\n\n"
+        if part else ""
+    )
     return (
         LANGUAGE_RULES.get(language, "")
+        + piece
         + f"Объём конспекта: {length.guidance}\n\n"
+        + size
         + closing
         + f"<material>\n{material}\n</material>"
     )
