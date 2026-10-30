@@ -33,6 +33,10 @@ OVERLOAD_DELAY = 4.0
 QUOTA_ZONE = ZoneInfo("America/Los_Angeles")
 
 
+NO_NOTE_KEY = (
+    "Конспект пишется только через ключ посредника, а его нет. Добавьте ключ посредника в /keys. "
+    "Ключи Google нужны только для расшифровки записей."
+)
 NO_SPEECH_KEY = (
     "Запись нельзя расшифровать ключом поставщика: он не передаёт звук модели, и она может выдумать текст. "
     "Добавьте ключ Google AI Studio в /keys или пришлите текст расшифровки. "
@@ -167,7 +171,14 @@ class RotatingModel:
     async def outline(self, marked_text: str) -> list[dict]:
         return await self._call(lambda client: client.outline(marked_text))
 
+    def _note_keys(self) -> list[str]:
+        """Keys for writing notes: the reseller's only. Google keys are for speech recognition."""
+        return self._ring.order([key for key in self._keys if is_gateway_key(key)])
+
     async def write(self, transcript: str, length_id: str, language: str = "auto", extras=(), part: str = "") -> NoteDocument:
+        keys = self._note_keys()
+        if not keys:
+            raise GeminiError(NO_NOTE_KEY)
         if part:
-            return await self._call(lambda client: client.write(transcript, length_id, language, extras, part))
-        return await self._call(lambda client: client.write(transcript, length_id, language, extras))
+            return await self._call(lambda client: client.write(transcript, length_id, language, extras, part), keys)
+        return await self._call(lambda client: client.write(transcript, length_id, language, extras), keys)

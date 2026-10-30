@@ -76,12 +76,32 @@ def test_least_recently_used_key_goes_first():
     assert ring.order(["a", "b", "c"]) == ["c", "a", "b"]
 
 
+GATEWAY_A = "sk-cvc-" + "a" * 64
+GATEWAY_B = "sk-cvc-" + "b" * 64
+
+
 def test_daily_quota_rests_until_pacific_midnight(monkeypatch):
     monkeypatch.setattr(keyring, "seconds_to_quota_reset", lambda: 7200.0)
     ring = KeyRing(Clock())
-    model, _, _ = _model(["a", "b"], {"a": [GeminiError("limit", QUOTA, daily=True)]}, ring)
+    model, _, _ = _model([GATEWAY_A, GATEWAY_B], {GATEWAY_A: [GeminiError("limit", QUOTA, daily=True)]}, ring)
     asyncio.run(model.write("t", "medium"))
-    assert ring.resting("a") == 7200
+    assert ring.resting(GATEWAY_A) == 7200
+
+
+def test_notes_are_written_only_with_reseller_keys():
+    ring = KeyRing(Clock())
+    model, calls, _ = _model(["google-key", GATEWAY_A], {}, ring)
+    assert asyncio.run(model.write("t", "medium")) == GATEWAY_A
+    assert calls == [GATEWAY_A]
+    assert asyncio.run(model.transcribe(b"", "x.ogg")) == "google-key"  # speech still uses Google
+
+
+def test_without_a_reseller_key_a_note_is_refused_not_written_with_google():
+    ring = KeyRing(Clock())
+    model, calls, _ = _model(["google-key"], {}, ring)
+    with pytest.raises(GeminiError, match="ключ посредника"):
+        asyncio.run(model.write("t", "medium"))
+    assert calls == []
 
 
 def test_rejected_key_is_skipped():

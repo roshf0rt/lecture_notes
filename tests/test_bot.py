@@ -25,6 +25,7 @@ from notes_bot.settings import SettingsStore, UserSettings
 from notes_bot.storage import BotState, Options
 
 KEY = "AIzaSyTestKeyValue1234567890abcdefghij"
+GATEWAY = "sk-cvc-" + "g" * 64  # writes notes; KEY (Google) only transcribes
 KEY2 = "AQ.TestKeyValue1234567890abcdefghijklmnop"
 BAD_KEY = "AIzaSyTestKeyValue1234567890abcdefBAD"
 QUOTA_KEY = "AIzaSyTestKeyValue1234567890abcdeQUOTA"
@@ -360,6 +361,7 @@ def _question(h, user_id, messages):
 def test_files_sent_together_bring_one_question(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     question = _question(h, 5, _two_recordings())
     assert "1. Голосовое, 1:15" in question["text"] and "2. part2.aac" in question["text"]
     assert not h.calls  # nothing is transcribed before the answer
@@ -380,6 +382,7 @@ def _answer(h, user_id, question, action):
 def test_merge_makes_one_note_from_all_parts_in_order(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     h.services.store.save(5, UserSettings())
     question = _question(h, 5, _two_recordings())
     _, message = _answer(h, 5, question, "merge")
@@ -395,6 +398,7 @@ def test_merge_makes_one_note_from_all_parts_in_order(tmp_path):
 def test_split_makes_a_note_per_file(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     question = _question(h, 5, _two_recordings())
     _, message = _answer(h, 5, question, "split")
     assert len([call for call in h.calls if call[0] == "write"]) == 2
@@ -405,6 +409,7 @@ def test_split_makes_a_note_per_file(tmp_path):
 def test_cancel_and_stale_buttons(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     question = _question(h, 5, _two_recordings())
     query, _ = _answer(h, 5, question, "cancel")
     assert "Отменено" in query.edited[-1][0]
@@ -416,6 +421,7 @@ def test_cancel_and_stale_buttons(tmp_path):
 def test_files_sent_while_the_question_is_open_join_it(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     _question(h, 5, _two_recordings())
     late = FakeMessage(document=_document(LONG_TEXT.encode(), "notes.txt", "text/plain"), message_id=12)
     h.run(on_media, 5, message=late)
@@ -432,6 +438,7 @@ def test_transcript_without_a_key_asks_for_one(tmp_path):
 def test_text_document_becomes_pdf(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     message = FakeMessage(document=_document(LONG_TEXT.encode(), "lecture.txt", "text/plain"))
     h.run(on_media, 5, message=message)
     pdf = next(reply for reply in message.replies if "document" in reply)
@@ -443,6 +450,7 @@ def test_text_document_becomes_pdf(tmp_path):
 def test_aac_document_with_a_wrong_name_is_sent_as_aac(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     h.services.store.save(5, UserSettings(output="tg"))
     body = b"\xff\xf1\x50\x80" + b"\x00" * 200
     message = FakeMessage(document=_document(body, "recording", "application/octet-stream"))
@@ -456,6 +464,7 @@ def test_second_key_takes_over_when_the_first_is_out_of_quota(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, QUOTA_KEY)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     message = FakeMessage(voice=_voice())
     h.run(on_media, 5, message=message)
     assert [call[1] for call in h.calls if call[0] == "transcribe"] == [QUOTA_KEY, KEY]
@@ -466,6 +475,7 @@ def test_second_key_takes_over_when_the_first_is_out_of_quota(tmp_path):
 def test_failures_are_reported_and_logged(tmp_path):
     h = Harness(tmp_path, fail_write=GeminiError("Модель не вернула конспект. Попробуйте ещё раз."))
     h.services.keys.add(2, KEY)
+    h.services.keys.add(2, GATEWAY)
     message = h.text(2, LONG_TEXT)
     assert "Модель не вернула конспект" in message.edits[-1]
     assert h.services.state.stats().failures_day == 1
@@ -474,6 +484,7 @@ def test_failures_are_reported_and_logged(tmp_path):
 def test_telegram_messages_go_out_as_markdown_v2(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(3, KEY)
+    h.services.keys.add(3, GATEWAY)
     h.services.store.save(3, UserSettings(output="tg"))
     message = h.text(3, LONG_TEXT)
     sent = [reply for reply in message.replies if reply.get("parse_mode") == "MarkdownV2"]
@@ -483,11 +494,12 @@ def test_telegram_messages_go_out_as_markdown_v2(tmp_path):
 def test_shared_keys_serve_users_without_their_own_only_when_enabled(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(POOL, KEY2)
+    h.services.keys.add(POOL, GATEWAY)
     assert "нужен ключ Gemini" in h.text(6, LONG_TEXT).replies[-1]["text"]
     h.services.state.set_option("shared_keys", True)
     message = h.text(6, LONG_TEXT)
     assert "на общем ключе" in message.edits[-1]
-    assert ("write", KEY2, "auto") in h.calls
+    assert ("write", GATEWAY, "auto") in h.calls
 
 
 def test_daily_limit_stops_users_but_not_admins(tmp_path):
@@ -495,6 +507,7 @@ def test_daily_limit_stops_users_but_not_admins(tmp_path):
     h.services.state.set_option("daily_limit", 3)
     for user_id in (7, ADMIN):
         h.services.keys.add(user_id, KEY)
+        h.services.keys.add(user_id, GATEWAY)
         for _ in range(3):
             h.services.state.log_job(user_id, "text", True, 1.0)
     assert "Лимит" in h.text(7, LONG_TEXT).replies[-1]["text"]
@@ -571,6 +584,7 @@ def test_admin_switches_access_and_adds_ids(tmp_path):
 def test_admin_model_choice_is_checked_before_saving(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(ADMIN, KEY)
+    h.services.keys.add(ADMIN, GATEWAY)
     h.tap(ADMIN, "ad:model:set:1", admin.on_admin_button)
     assert h.services.options().model == admin.MODEL_PRESETS[1]
 
@@ -624,6 +638,7 @@ def test_admins_hear_about_new_users_when_asked(tmp_path, notify):
 def test_second_note_waits_in_line_instead_of_being_refused(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(3, KEY)
+    h.services.keys.add(3, GATEWAY)
     first, second = FakeMessage(text=LONG_TEXT, message_id=1), FakeMessage(text=LONG_TEXT, message_id=2)
 
     async def both():
@@ -644,6 +659,7 @@ def test_queue_has_a_limit_per_user(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "MAX_QUEUED_PER_USER", 1)
     h = Harness(tmp_path)
     h.services.keys.add(3, KEY)
+    h.services.keys.add(3, GATEWAY)
     h.services.queued[3] = 1
     message = h.text(3, LONG_TEXT)
     assert "уже в очереди 1 конспект" in message.replies[-1]["text"]
@@ -659,6 +675,7 @@ def test_notes_are_counted_in_russian(count, word):
 def test_files_over_20_mb_are_refused_by_the_cloud_api_with_a_hint(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     big = _document(b"OggS" + b"\x00" * 60, "lecture.ogg", "audio/ogg", size=25 * 1024 * 1024)
     message = FakeMessage(document=big)
     h.run(on_media, 5, message=message)
@@ -671,6 +688,7 @@ def _local_harness(tmp_path):
     h.services.config = Config(telegram_token="t", gemini_model="m", data_dir=tmp_path, allowed_user_ids=frozenset(),
                                admin_ids=frozenset({ADMIN}), telegram_api_url="http://127.0.0.1:8081")
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     return h
 
 
@@ -708,6 +726,7 @@ def test_three_big_parts_merge_into_one_note_without_loading_them(tmp_path):
 def test_both_formats_arrive_automatically_messages_first(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(3, KEY)
+    h.services.keys.add(3, GATEWAY)
     message = h.text(3, LONG_TEXT)
     kinds = ["document" if "document" in reply else "text" for reply in message.replies if "document" in reply or reply.get("parse_mode")]
     first_pdf = kinds.index("document")
@@ -732,6 +751,7 @@ def test_only_admins_can_request_an_update(tmp_path):
 def test_the_updater_is_told_how_many_notes_are_running(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(3, KEY)
+    h.services.keys.add(3, GATEWAY)
     seen = []
     original = h.services.make_client
 
@@ -755,6 +775,7 @@ def test_the_updater_is_told_how_many_notes_are_running(tmp_path):
 def test_transcript_file_arrives_even_when_writing_the_note_fails(tmp_path):
     h = Harness(tmp_path, fail_write=GeminiError("Конспект получился в неверном формате. Попробуйте ещё раз."))
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     question = _question(h, 5, _two_recordings())
     _, message = _answer(h, 5, question, "merge")
     assert "неверном формате" in message.edits[-1]
@@ -765,6 +786,7 @@ def test_transcript_file_arrives_even_when_writing_the_note_fails(tmp_path):
 def test_raw_button_sends_only_the_transcript(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     question = _question(h, 5, _two_recordings())
     _, message = _answer(h, 5, question, "raw")
     assert [call for call in h.calls if call[0] == "write"] == []
@@ -776,6 +798,7 @@ def test_raw_button_sends_only_the_transcript(tmp_path):
 def test_single_recording_is_only_asked_about_when_the_setting_is_on(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     h.tap(5, "st:raw", on_settings_button)
     assert h.services.store.get(5).ask_raw is True
     question = _question(h, 5, _two_recordings()[:1])
@@ -794,10 +817,11 @@ def _pdf(text: str) -> bytes:
 def test_pdf_with_text_becomes_the_lecture(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     body = _pdf(LONG_TEXT)
     message = FakeMessage(document=_document(body, "lecture.pdf", "application/pdf"))
     h.run(on_media, 5, message=message)
-    assert ("write", KEY, "auto") in h.calls
+    assert ("write", GATEWAY, "auto") in h.calls
     assert "Конспект готов" in message.edits[-1]
 
 
@@ -806,6 +830,7 @@ def test_scanned_pdf_without_text_is_refused(tmp_path):
 
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     body = HTML(string="<p></p>").write_pdf()
     message = FakeMessage(document=_document(body, "scan.pdf", "application/pdf"))
     h.run(on_media, 5, message=message)
@@ -827,6 +852,7 @@ def test_nothing_is_made_before_the_agreement_is_accepted(tmp_path):
     h = Harness(tmp_path)
     h.auto_accept = False
     h.services.keys.add(8, KEY)
+    h.services.keys.add(8, GATEWAY)
     message = h.text(8, LONG_TEXT)
     assert not [call for call in h.calls if call[0] == "write"]
     assert "Пользовательское соглашение" in message.replies[-1]["text"]
@@ -841,6 +867,7 @@ def test_accepting_the_agreement_lets_the_user_make_notes(tmp_path):
     h = Harness(tmp_path)
     h.auto_accept = False
     h.services.keys.add(8, KEY)
+    h.services.keys.add(8, GATEWAY)
     query = FakeQuery(f"ag:yes:{AGREEMENT_VERSION}", 8)
     h.run(on_agreement_button, 8, query=query)
     assert h.services.state.agreed_version(8) == AGREEMENT_VERSION
@@ -855,6 +882,7 @@ def test_an_old_agreement_version_does_not_count(tmp_path):
     h = Harness(tmp_path)
     h.auto_accept = False
     h.services.keys.add(8, KEY)
+    h.services.keys.add(8, GATEWAY)
     h.services.state.accept_agreement(8, "old-version")
     message = h.text(8, LONG_TEXT)
     assert "Пользовательское соглашение" in message.replies[-1]["text"]
@@ -922,6 +950,7 @@ def test_bind_outside_a_group_is_refused(tmp_path):
 def test_a_group_member_gets_the_group_topics_and_the_matching_one_first(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(6, KEY)
+    h.services.keys.add(6, GATEWAY)
     _bind(h, 5, "Химия", 3)
     _bind(h, 5, "Лекция", 4)  # the fake note is titled "Лекция", so this subject matches it
     h.bot.members.add((-1001234, 6))  # the friend is in the group, she did not bind anything
@@ -937,6 +966,7 @@ def test_a_group_member_gets_the_group_topics_and_the_matching_one_first(tmp_pat
 def test_a_user_outside_the_group_gets_no_offer_and_learns_nothing(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(7, KEY)
+    h.services.keys.add(7, GATEWAY)
     _bind(h, 5, "Лекция", 4)
     message = h.text(7, LONG_TEXT)
     assert not any("Отправить этот конспект" in reply.get("text", "") for reply in message.replies)
@@ -946,6 +976,7 @@ def test_a_user_outside_the_group_gets_no_offer_and_learns_nothing(tmp_path):
 def test_a_note_is_not_posted_without_a_tap_and_cancel_keeps_it_home(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     _bind(h, 5, "Физика", 4)
     message = h.text(5, LONG_TEXT)
     assert not h.bot.topic_messages and not h.bot.documents
@@ -957,6 +988,7 @@ def test_a_note_is_not_posted_without_a_tap_and_cancel_keeps_it_home(tmp_path):
 def test_no_offer_without_groups_with_topics(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     message = h.text(5, LONG_TEXT)
     assert not any("Отправить этот конспект" in reply.get("text", "") for reply in message.replies)
 
@@ -964,6 +996,7 @@ def test_no_offer_without_groups_with_topics(tmp_path):
 def test_another_user_cannot_post_someone_elses_note(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     _bind(h, 5, "Лекция", 4)
     message = h.text(5, LONG_TEXT)
     token = _offer(message)["reply_markup"].inline_keyboard[0][0].callback_data.split(":")[1]
@@ -977,6 +1010,7 @@ def test_another_user_cannot_post_someone_elses_note(tmp_path):
 def test_two_groups_are_told_apart_by_their_titles(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     _bind(h, 5, "Физика", 10, chat_id=-100)
     _bind(h, 6, "Физика", 20, chat_id=-200)
     h.bot.members.update({(-100, 5), (-200, 5)})
@@ -989,6 +1023,7 @@ def test_two_groups_are_told_apart_by_their_titles(tmp_path):
 def test_a_group_always_gets_the_pdf_and_one_short_message(tmp_path):
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     h.services.store.save(5, UserSettings(output="tg"))  # the user's own format is full text
     _bind(h, 5, "Лекция", 4)
     message = h.text(5, LONG_TEXT)
@@ -1003,6 +1038,7 @@ def test_semester_with_a_subject_posts_every_topic_to_its_topic_without_asking(t
 
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     _bind(h, 5, "Физика", 9)
     message = FakeMessage(text=f"/semester\nФизика\n{LONG_TEXT}")
     h.run(on_semester, 5, message=message)
@@ -1015,6 +1051,7 @@ def test_semester_with_an_unknown_subject_is_refused_before_any_work(tmp_path):
 
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     _bind(h, 5, "Физика", 9)
     message = FakeMessage(text=f"/semester\nХимия\n{LONG_TEXT}")
     h.run(on_semester, 5, message=message)
@@ -1027,6 +1064,7 @@ def test_semester_subject_needs_membership_of_the_group(tmp_path):
 
     h = Harness(tmp_path)
     h.services.keys.add(7, KEY)
+    h.services.keys.add(7, GATEWAY)
     _bind(h, 5, "Физика", 9)  # user 7 is not in the group
     message = FakeMessage(text=f"/semester\nФизика\n{LONG_TEXT}")
     h.run(on_semester, 7, message=message)
@@ -1038,6 +1076,7 @@ def test_semester_on_a_long_text_runs_through_the_bot_and_reports_progress(tmp_p
 
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     long_text = "\n".join(f"Абзац номер {n} о теме {n // 50}, с тремя словами и числом {n * 7}." for n in range(3000))
     _bind(h, 5, "Физика", 9)
     message = FakeMessage(text=f"/semester\nФизика\n{long_text}")
@@ -1065,6 +1104,7 @@ def test_semestr_alone_lists_the_subjects_of_my_groups_and_waits_for_the_text(tm
 
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     _bind(h, 5, "Химия", 3)
     _bind(h, 5, "Физика", 4)
     message = FakeMessage(text="/semestr")
@@ -1084,6 +1124,7 @@ def test_semestr_with_text_asks_then_uses_the_text_already_sent(tmp_path):
 
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     _bind(h, 5, "Физика", 4)
     message = FakeMessage(text=f"/semestr {LONG_TEXT}")
     h.run(on_semester, 5, message=message)
@@ -1097,6 +1138,7 @@ def test_without_a_subject_the_notes_are_offered_as_usual(tmp_path):
 
     h = Harness(tmp_path)
     h.services.keys.add(5, KEY)
+    h.services.keys.add(5, GATEWAY)
     _bind(h, 5, "Физика", 4)
     message = FakeMessage(text="/semestr")
     h.run(on_semester, 5, message=message)
