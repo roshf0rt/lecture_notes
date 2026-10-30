@@ -9,7 +9,8 @@ class Length:
     title: str
     guidance: str
     # The note should take this share of the source, in characters, from low to high; (0, 0) means no target.
-    # The ranges do not overlap, so a longer length always gives a longer note.
+    # The ranges do not overlap, so a longer length always gives a longer note. The model writes about a third
+    # more than asked (checked on a 53k-character lecture), so the ranges are set that much lower than the aim.
     low: float = 0.0
     high: float = 0.0
 
@@ -41,20 +42,20 @@ LENGTHS: tuple[Length, ...] = (
         "Короткий",
         "Сжато: только главные темы лекции, определения самых важных терминов и выводы. 3–6 разделов, "
         "без примеров, кроме одного-двух ключевых.",
-        0.04, 0.08,
+        0.03, 0.06,
     ),
     Length(
         "medium",
         "Средний",
         "Сбалансированно: все основные темы, ключевые определения, важные примеры одной фразой и выводы.",
-        0.1, 0.16,
+        0.07, 0.11,
     ),
     Length(
         "long",
         "Подробный",
         "Полно: все темы и подтемы лекции, определения, имена, даты, цифры, задания и требования. "
         "Кейсы и примеры — коротко, в 1–3 предложения: что произошло и какой вывод. Повторы и второстепенные детали опускай.",
-        0.18, 0.28,
+        0.13, 0.2,
     ),
     Length(
         "max",
@@ -62,7 +63,7 @@ LENGTHS: tuple[Length, ...] = (
         "Почти всё содержательное: каждое определение, пункт перечня, цифра и имя, каждый кейс и пример "
         "со всеми деталями, которые назвал лектор, его рассуждения и оговорки. Опускай только шутки, "
         "повторы и организационный шум.",
-        0.32, 0.45,
+        0.24, 0.34,
     ),
     Length(
         "full",

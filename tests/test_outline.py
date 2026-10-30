@@ -177,6 +177,6 @@ def test_the_note_is_asked_for_a_size_range_and_longer_lengths_never_overlap_sho
     from notes_bot.notes import build_user_message
 
     message = build_user_message("слово " * 10_000, "max")
-    assert "от 19200 до 27000 знаков" in message and "воду" in message
+    assert "от 14400 до 20400 знаков" in message and "воду" in message
     assert all(shorter.high <= longer.low for shorter, longer in zip(LENGTHS, LENGTHS[1:]))
     assert "часть 2 из 5" in build_user_message("текст", "full", part="2 из 5")
