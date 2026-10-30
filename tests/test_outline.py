@@ -68,7 +68,7 @@ class SplittingModel:
             raise GeminiError("Не получилось разбить материал на темы.")
         return self.outline_answer
 
-    async def write(self, transcript, length_id, language="auto", extras=()):
+    async def write(self, transcript, length_id, language="auto", extras=(), part=""):
         self.written.append(transcript)
         return NoteDocument(title="Тема", main_idea="Идея.", sections=[{"heading": "Р", "elements": [
             {"type": "bullets", "items": ["пункт"]}]}])
@@ -88,7 +88,7 @@ def test_a_long_semester_text_gets_one_note_per_topic(monkeypatch):
     text = _long_text(3000)  # well over SPLIT_CHARS
     blocks = paragraphs_of(text)
     model = SplittingModel(outline=[{"title": "Первая", "from": 0}, {"title": "Вторая", "from": len(blocks) // 2}])
-    results = _run_parts(model, UserSettings(output="pdf"), text=text)
+    results = _run_parts(model, UserSettings(output="pdf", length="medium"), text=text)
     assert len(results) == 2 and len(model.written) == 2
     assert model.written[0] + "\n\n" + model.written[1] == "\n\n".join(blocks).strip()
 
@@ -106,7 +106,7 @@ def test_split_on_request_makes_topics_even_for_a_short_text():
 def test_if_the_outline_fails_the_text_is_still_split_into_notes():
     text = _long_text(3000)
     model = SplittingModel(fail=True)
-    results = _run_parts(model, UserSettings(output="pdf"), text=text)
+    results = _run_parts(model, UserSettings(output="pdf", length="medium"), text=text)
     assert len(results) > 1 and len(model.written) == len(results)
 
 
@@ -165,17 +165,18 @@ def test_a_long_lecture_in_maximum_detail_is_written_in_pieces_and_joined():
 def test_a_short_lecture_or_a_shorter_length_is_written_in_one_go():
     text = "\n".join(f"Абзац {number}: репутация складывается из мнений разных аудиторий и их опыта." for number in range(700))
     model = PiecewiseModel()
-    _run_parts(model, UserSettings(output="pdf", length="long"), text=text)
-    assert [call[0] for call in model.calls] == ["long"]
+    _run_parts(model, UserSettings(output="pdf", length="medium"), text=text)
+    assert [call[0] for call in model.calls] == ["medium"]
     model = PiecewiseModel()
     _run_parts(model, UserSettings(output="pdf", length="max"), text=text[:10_000])
     assert [call[0] for call in model.calls] == ["max"]
 
 
-def test_the_note_is_asked_to_be_at_least_a_share_of_the_material():
+def test_the_note_is_asked_for_a_size_range_and_longer_lengths_never_overlap_shorter_ones():
+    from notes_bot.blocks import LENGTHS
     from notes_bot.notes import build_user_message
 
     message = build_user_message("слово " * 10_000, "max")
-    assert "не короче 24000 знаков" in message
-    assert "не короче" not in build_user_message("слово " * 10_000, "short")
+    assert "от 19200 до 27000 знаков" in message and "воду" in message
+    assert all(shorter.high <= longer.low for shorter, longer in zip(LENGTHS, LENGTHS[1:]))
     assert "часть 2 из 5" in build_user_message("текст", "full", part="2 из 5")

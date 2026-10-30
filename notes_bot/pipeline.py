@@ -23,7 +23,7 @@ MIN_TEXT_CHARS = 100
 MAX_TEXT_CHARS = 400_000
 # In these lengths a model asked for a long note in one go still shortens it a lot, so longer material
 # is written piece by piece and the pieces are joined into one note.
-PIECEWISE_LENGTHS = ("max", "full")
+PIECEWISE_LENGTHS = ("long", "max", "full")
 PIECE_CHARS = 15_000
 PIECES_AT_ONCE = 3
 # Called with a stage name and, for several recordings, which one is being read ("2 из 3").

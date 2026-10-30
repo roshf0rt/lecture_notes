@@ -67,7 +67,7 @@ class FakeModel:
     async def outline(self, marked_text):
         return [{"title": "Первая", "from": 0}]
 
-    async def write(self, transcript, length, language="auto", extras=()):
+    async def write(self, transcript, length, language="auto", extras=(), part=""):
         self.log.append(("write", self.api_key, language))
         if self.fail_write is not None:
             raise self.fail_write
