@@ -64,3 +64,14 @@ def test_a_single_element_too_big_for_one_message_is_refused():
     doc = _doc([{"heading": "Огромный", "elements": [{"type": "paragraph", "text": "а" * 40_000}]}])
     with pytest.raises(RichTooLong):
         rich_messages(doc)
+
+
+def test_bold_markers_never_reach_the_message_whatever_field_they_are_in():
+    doc = _doc([{"heading": "**Цели**", "icon": "📌", "elements": [
+        {"type": "table", "headers": ["**Задача**", "Что"], "rows": [["**Генерация лидов**", "**Финансы** и локация"]]},
+        {"type": "toggle", "title": "**Кейс**", "text": "**Разбор**"},
+        {"type": "bullets", "items": ["**Пункт**: текст"]},
+    ]}], main_idea="**Идея**.")
+    (message,) = rich_messages(doc)
+    assert "**" not in message
+    assert "<b>Генерация лидов</b>" in message and "<b>Финансы</b> и локация" in message and "<b>Задача</b>" in message

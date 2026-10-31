@@ -50,8 +50,8 @@ def _table_items(element: Element) -> list[str]:
     items = []
     for row in rows:
         label, *cells = row
-        details = "; ".join(f"{header}: {cell}" for header, cell in zip(headers[1:], cells) if cell)
-        items.append(f"<b>{html.escape(label, quote=False)}</b>" + (f": {_text(details)}" if details else ""))
+        details = "; ".join(f"{_text(header)}: {_text(cell)}" for header, cell in zip(headers[1:], cells) if cell)
+        items.append(f"<b>{_text(label)}</b>" + (f": {details}" if details else ""))
     return items
 
 
@@ -71,7 +71,7 @@ def _element(element: Element) -> list[tuple[str, int]]:
         label = KIND_LABELS.get(element.kind, "")
         return [(f"<blockquote><b>{label}</b> {_text(element.text)}</blockquote>", 1)]
     if element.type == TOGGLE:
-        title = html.escape(element.title or "Подробнее", quote=False)
+        title = _text(element.title or "Подробнее")
         return [(f"<details><summary>{title}</summary><p>{_text(element.text)}</p></details>", 2)]
     if element.type == SUBHEADING:
         return [(f"<h3>{_text(element.text)}</h3>", 1)]
@@ -79,12 +79,12 @@ def _element(element: Element) -> list[tuple[str, int]]:
 
 
 def _chunks(doc: NoteDocument) -> list[tuple[str, int]]:
-    chunks = [(f"<h1>{html.escape(doc.icon + ' ' + doc.title, quote=False)}</h1>", 1)]
+    chunks = [(f"<h1>{html.escape(doc.icon, quote=False)} {_text(doc.title)}</h1>", 1)]
     if doc.main_idea:
         chunks.append((f"<blockquote><b>Главная идея.</b> {_text(doc.main_idea)}</blockquote>", 1))
     for number, section in enumerate(doc.sections, start=1):
         icon = f"{html.escape(section.icon, quote=False)} " if section.icon else ""
-        heading = f"<h2>{icon}{number}. {html.escape(section.heading, quote=False)}</h2>"
+        heading = f"<h2>{icon}{number}. {_text(section.heading)}</h2>"
         first = True
         for element in section.elements:
             for piece, blocks in _element(element):
