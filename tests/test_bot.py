@@ -2,6 +2,8 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from telegram.constants import ParseMode
+from telegram.error import TelegramError
 from telegram.ext import ApplicationHandlerStop
 
 from notes_bot import admin, bot
@@ -78,6 +80,23 @@ def _note(title="Лекция") -> NoteDocument:
     return NoteDocument(title=title, main_idea="Главная идея лекции.", sections=[{"heading": "Тема", "elements": [{"type": "bullets", "items": ["Главный вывод " * 4]}]}])
 
 
+class FakeRichBot:
+    """Stands in for the raw Bot API call that python-telegram-bot does not wrap yet."""
+
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+        self.fail = False
+
+    async def do_api_request(self, endpoint, api_kwargs=None, **kwargs):
+        self.calls.append((endpoint, api_kwargs))
+        if self.fail:
+            raise TelegramError("Method not found")
+        return {}
+
+
+RICH_BOT = FakeRichBot()
+
+
 class FakeMessage:
     def __init__(self, text=None, document=None, voice=None, audio=None, message_id=1):
         self.text = text
@@ -99,6 +118,9 @@ class FakeMessage:
 
     async def reply_document(self, document, filename=None, **kwargs):
         self.replies.append({"document": document.read(), "filename": filename})
+
+    def get_bot(self):
+        return RICH_BOT
 
     def texts(self):
         return [reply["text"] for reply in self.replies if "text" in reply] + self.edits
@@ -732,6 +754,38 @@ def test_both_formats_arrive_automatically_messages_first(tmp_path):
     first_pdf = kinds.index("document")
     assert first_pdf > 0 and set(kinds[:first_pdf]) == {"text"}  # the messages come before the PDF
     assert [r for r in message.replies if "document" in r][0]["filename"] == "Лекция.pdf"
+
+
+def test_pdf_and_rich_message_send_the_note_formatted_then_the_pdf(tmp_path):
+    h = Harness(tmp_path)
+    RICH_BOT.calls.clear()
+    RICH_BOT.fail = False
+    h.services.keys.add(3, KEY)
+    h.services.keys.add(3, GATEWAY)
+    h.services.store.save(3, UserSettings(output="both_rich"))
+    message = h.text(3, LONG_TEXT)
+    assert RICH_BOT.calls and all(endpoint == "sendRichMessage" for endpoint, _ in RICH_BOT.calls)
+    _, kwargs = RICH_BOT.calls[0]
+    assert kwargs["chat_id"] == message.chat_id and kwargs["rich_message"]["html"].startswith("<h1>")
+    assert kwargs["reply_parameters"] == {"message_id": message.message_id}
+    assert not [reply for reply in message.replies if reply.get("parse_mode") == ParseMode.MARKDOWN_V2]  # the note is not sent as MarkdownV2
+    assert [reply["filename"] for reply in message.replies if "document" in reply] == ["Лекция.pdf"]
+
+
+def test_when_telegram_refuses_rich_messages_the_chat_gets_the_plain_text(tmp_path):
+    h = Harness(tmp_path)
+    RICH_BOT.calls.clear()
+    RICH_BOT.fail = True
+    try:
+        h.services.keys.add(3, KEY)
+        h.services.keys.add(3, GATEWAY)
+        h.services.store.save(3, UserSettings(output="both_rich"))
+        message = h.text(3, LONG_TEXT)
+    finally:
+        RICH_BOT.fail = False
+    assert len(RICH_BOT.calls) == 1  # the first refusal stops the rich messages
+    assert [reply for reply in message.replies if reply.get("parse_mode") == ParseMode.MARKDOWN_V2]  # the plain text went out
+    assert [reply["filename"] for reply in message.replies if "document" in reply] == ["Лекция.pdf"]
 
 
 def test_admin_update_button_leaves_a_request_for_the_server(tmp_path):

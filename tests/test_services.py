@@ -107,7 +107,7 @@ def test_preset_is_marked_even_after_a_custom_colour_was_set():
 
 def test_premium_buttons_carry_the_icon_outside_the_text():
     _, markup = settings_view(PREMIUM, "output", UserSettings(output="pdf"))
-    button = markup.inline_keyboard[2][0]
+    button = markup.inline_keyboard[3][0]  # the PDF-only row, after the two "both" rows
     assert button.text == "Только PDF"
     assert button.icon_custom_emoji_id.isdigit()
     assert button.style == "success"
@@ -115,7 +115,7 @@ def test_premium_buttons_carry_the_icon_outside_the_text():
 
 def test_plain_buttons_keep_the_emoji_in_the_text():
     _, markup = settings_view(PLAIN, "output", UserSettings(output="pdf"))
-    button = markup.inline_keyboard[2][0]
+    button = markup.inline_keyboard[3][0]  # the PDF-only row, after the two "both" rows
     assert button.text == "✅ Только PDF"
     assert button.icon_custom_emoji_id is None
 
@@ -152,7 +152,7 @@ def test_premium_can_be_stripped_from_a_message_and_keyboard():
     text, markup = settings_view(PREMIUM, "output", UserSettings(output="pdf"))
     plain_text, plain_markup = without_premium(text, markup)
     assert "<tg-emoji" not in plain_text and "📁" in plain_text
-    first = plain_markup.inline_keyboard[2][0]
+    first = plain_markup.inline_keyboard[3][0]
     assert first.text == "✅ Только PDF" and first.icon_custom_emoji_id is None
 
     _, reply_markup = without_premium("", main_keyboard(PREMIUM, True))

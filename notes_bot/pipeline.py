@@ -12,6 +12,7 @@ from .blocks import CLOSING_LENGTH_ID, ONE_MESSAGE_LENGTH_ID
 from .gemini import INLINE_LIMIT_BYTES, GeminiError
 from .notes import NoteDocument, Section, document_text
 from .render_pdf import render_pdf
+from .render_rich import RichTooLong, rich_messages
 from .transcript import junk_reason
 from .render_tg import fit_one_message, render_messages
 from .settings import UserSettings
@@ -68,6 +69,8 @@ class Result:
     transcript: str
     pdf: bytes | None = None
     messages: list[str] | None = None
+    # The same text as rich messages, when the user asked for that; messages are the fallback.
+    rich: list[str] | None = None
 
 
 class NotesPipeline:
@@ -147,15 +150,21 @@ class NotesPipeline:
         await progress("rendering")
         if settings.output == "tg_one":
             return Result(document, text, messages=fit_one_message(document, premium=premium))
-        pdf = messages = None
+        pdf = messages = rich = None
         if settings.output == "both_one":
             messages = await self._short_message(document, settings.language, premium)
-        if settings.output in ("pdf", "both", "both_one"):
+        if settings.output in ("pdf", "both", "both_one", "both_rich"):
             theme = get_theme(settings.theme, settings.custom_color)
             pdf = await asyncio.to_thread(render_pdf, document, theme)
         if settings.output in ("tg", "both"):
             messages = render_messages(document, premium=premium)
-        return Result(document, text, pdf=pdf, messages=messages)
+        if settings.output == "both_rich":
+            messages = render_messages(document, premium=premium)  # what the chat gets if Telegram refuses rich messages
+            try:
+                rich = rich_messages(document)
+            except RichTooLong:
+                log.warning("A piece of the note is too big for a rich message; the chat gets plain messages")
+        return Result(document, text, pdf=pdf, messages=messages, rich=rich)
 
     async def _write_in_pieces(self, text: str, length: str, language: str, extras: tuple[str, ...]) -> NoteDocument:
         chunks = pieces(text, PIECE_CHARS)

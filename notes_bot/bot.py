@@ -1037,14 +1037,40 @@ async def on_topics(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _send(message: Message, result: Result) -> None:
     name = _file_name(result.document.title)
     # The readable messages first, so the note is there at once; the PDF follows when both are asked for.
-    for text in result.messages or []:
+    if result.rich is not None:
+        await _send_rich(message, result)
+    else:
+        await _send_plain(message, result.messages or [])
+    if result.pdf is not None:
+        await message.reply_document(document=io.BytesIO(result.pdf), filename=f"{name}.pdf")
+
+
+async def _send_plain(message: Message, texts: list[str]) -> None:
+    for text in texts:
         try:
             await message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
         except BadRequest:
             log.warning("Telegram rejected a MarkdownV2 message; sending it as plain text")
             await message.reply_text(plain_text(text))
-    if result.pdf is not None:
-        await message.reply_document(document=io.BytesIO(result.pdf), filename=f"{name}.pdf")
+
+
+async def _send_rich(message: Message, result: Result) -> None:
+    """Rich messages (Bot API 10.1+). If Telegram refuses one, the chat gets the plain messages instead."""
+    bot = message.get_bot()
+    for number, piece in enumerate(result.rich or [], start=1):
+        try:
+            await bot.do_api_request("sendRichMessage", api_kwargs={
+                "chat_id": message.chat_id,
+                "rich_message": {"html": piece},
+                "reply_parameters": {"message_id": message.message_id},
+            })
+        except TelegramError:
+            log.warning("Telegram refused rich message %d; the rest goes out as plain messages", number, exc_info=True)
+            if number == 1:
+                await _send_plain(message, result.messages or [])
+            else:
+                await message.reply_text("Конспект отправлен не полностью в оформленном виде. Полный текст есть в PDF.")
+            return
 # --- application ------------------------------------------------------------------------
 
 

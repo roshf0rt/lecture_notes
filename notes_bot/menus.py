@@ -14,12 +14,13 @@ from .ui import Ui, html
 
 OUTPUT_TITLES = {
     "both": "PDF и полный текст в чате",
+    "both_rich": "PDF и полный текст с оформлением",
     "both_one": "PDF и одно короткое сообщение",
     "pdf": "Только PDF",
     "tg": "Только полный текст в чате",
     "tg_one": "Только одно короткое сообщение",
 }
-OUTPUT_ICONS = {"both": "stack", "both_one": "clip", "pdf": "pdf", "tg": "message", "tg_one": "clip"}
+OUTPUT_ICONS = {"both": "stack", "both_rich": "stack", "both_one": "clip", "pdf": "pdf", "tg": "message", "tg_one": "clip"}
 LANGUAGE_TITLES = {"auto": "Как в материале", "ru": "Всегда по-русски"}
 AI_STUDIO = "https://aistudio.google.com/apikey"
 
@@ -132,6 +133,7 @@ def settings_view(ui: Ui, name: str, settings: UserSettings) -> tuple[str, Inlin
                 for key, title in OUTPUT_TITLES.items()]
         text = (f"{ui.e('format')} <b>Как присылать конспект</b>\n\n"
                 "<b>Полный текст в чате</b>: конспект целиком, несколько сообщений подряд. "
+                "<b>Полный текст с оформлением</b>: то же самое, но заголовки, списки и сворачиваемые кейсы в одном оформленном сообщении (rich message, нужен Telegram с Bot API 10.1). "
                 "<b>Одно короткое сообщение</b>: выжимка, которая помещается в одно сообщение Telegram. "
                 "С PDF короткое сообщение идёт как краткое содержание, а полный конспект лежит в файле.")
         return text, InlineKeyboardMarkup([*rows, [back]])
