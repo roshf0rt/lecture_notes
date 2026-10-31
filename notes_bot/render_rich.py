@@ -51,7 +51,8 @@ def _table_items(element: Element) -> list[str]:
     for row in rows:
         label, *cells = row
         details = "; ".join(f"{_text(header)}: {_text(cell)}" for header, cell in zip(headers[1:], cells) if cell)
-        items.append(f"<b>{_text(label)}</b>" + (f": {details}" if details else ""))
+        # The label is already bold in the list item, so its own ** markers are just dropped.
+        items.append(f"<b>{html.escape(label.replace('**', ''), quote=False)}</b>" + (f": {details}" if details else ""))
     return items
 
 

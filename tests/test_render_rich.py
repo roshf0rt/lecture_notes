@@ -74,4 +74,5 @@ def test_bold_markers_never_reach_the_message_whatever_field_they_are_in():
     ]}], main_idea="**Идея**.")
     (message,) = rich_messages(doc)
     assert "**" not in message
-    assert "<b>Генерация лидов</b>" in message and "<b>Финансы</b> и локация" in message and "<b>Задача</b>" in message
+    assert "<b>Генерация лидов</b>: Что: <b>Финансы</b> и локация" in message
+    assert "<b><b>" not in message
