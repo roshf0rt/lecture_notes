@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from . import admin
+from . import admin, docx_workflow
 from .audio import is_media, sniff
 from .config import Config
 from .agreement import ACCEPT_PREFIX, AGREEMENT, AGREEMENT_VERSION
@@ -35,6 +35,7 @@ from .pdf_text import NoTextError, pdf_text
 from .menus import (
     AI_STUDIO,
     MENU_ADMIN,
+    MENU_DOCX,
     MENU_HELP,
     MENU_KEYS,
     MENU_SETTINGS,
@@ -84,6 +85,7 @@ MAX_BATCH = 10
 PENDING_TTL = 3600
 USER_COMMANDS = [
     BotCommand("start", "Главное меню"),
+    BotCommand("improve", "Улучшить файл DOCX"),
     BotCommand("settings", "Настройки конспектов"),
     BotCommand("keys", "Ключи Gemini"),
     BotCommand("help", "Как пользоваться"),
@@ -126,6 +128,7 @@ async def gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     s = services(context)
     user_id = update.effective_user.id
+    docx_workflow.clear_pending(context)
     context.user_data.pop("awaiting", None)
     ui = s.ui()
     await reply(
@@ -164,28 +167,32 @@ async def on_agreement_button(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     s.state.accept_agreement(query.from_user.id, version)
     await query.answer()
-    await edit(query, f"{ui.e('ok')} Спасибо, соглашение принято. Пришлите запись или текст лекции.")
+    await edit(query, f"{ui.e('ok')} Спасибо, соглашение принято. Пришлите запись, текст лекции или DOCX для улучшения.")
 
 
 async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    docx_workflow.clear_pending(context)
     s = services(context)
     ui = s.ui()
     await reply(update.effective_message, help_text(ui, s.config.local_mode), main_keyboard(ui, s.is_admin(update.effective_user.id)))
 
 
 async def on_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    docx_workflow.clear_pending(context)
     s = services(context)
     context.user_data.pop("awaiting", None)
     await reply(update.effective_message, *settings_view(s.ui(), "main", s.store.get(update.effective_user.id)))
 
 
 async def on_keys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    docx_workflow.clear_pending(context)
     s = services(context)
     context.user_data.pop("awaiting", None)
     await reply(update.effective_message, *_keys_view(s, update.effective_user.id))
 
 
 async def on_setkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    docx_workflow.clear_pending(context)
     s = services(context)
     context.user_data["awaiting"] = AWAIT_KEY
     await reply(update.effective_message, *key_prompt(s.ui(), "ky:show"))
@@ -197,10 +204,42 @@ async def on_forgetkey(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await reply(update.effective_message, f"{s.ui().e('trash')} Все ваши ключи удалены. Добавить новый: /keys.")
 
 
+async def on_improve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _agreed(update, context):
+        return
+    message = update.effective_message
+    command = docx_workflow.COMMAND.fullmatch((message.text or "").strip())
+    reply_to = getattr(message, "reply_to_message", None)
+    if getattr(reply_to, "document", None) is not None or (command and command.group("authors")):
+        await docx_workflow.clean_command(update, context)
+    else:
+        await docx_workflow.start(update, context)
+
+
+async def on_clean(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _agreed(update, context):
+        await docx_workflow.clean_command(update, context)
+
+
+async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await docx_workflow.cancel(update, context)
+
+
+async def on_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    docx_workflow.clear_pending(context)
+    await admin.on_admin(update, context)
+
+
+async def on_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    docx_workflow.clear_pending(context)
+    await admin.on_admin_button(update, context)
+
+
 # --- settings ---------------------------------------------------------------------------
 
 
 async def on_settings_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    docx_workflow.clear_pending(context)
     query = update.callback_query
     await query.answer()
     s = services(context)
@@ -260,6 +299,7 @@ def _keys_view(s: Services, user_id: int, statuses: dict[int, str] | None = None
 
 
 async def on_keys_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    docx_workflow.clear_pending(context)
     query = update.callback_query
     s = services(context)
     ui = s.ui()
@@ -317,6 +357,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     label = menu_label(text)
     if label is not None:
+        docx_workflow.clear_pending(context)
         context.user_data.pop("awaiting", None)
         if label == MENU_SETTINGS:
             await on_settings(update, context)
@@ -326,6 +367,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await on_help(update, context)
         elif label == MENU_ADMIN:
             await admin.on_admin(update, context)
+        elif label == MENU_DOCX:
+            await on_improve(update, context)
+        return
+
+    if docx_workflow.is_waiting(context):
+        if await _agreed(update, context):
+            await docx_workflow.handle_authors(update, context)
         return
 
     if awaiting and awaiting.startswith("admin:"):
@@ -477,6 +525,7 @@ async def _direct_target(bot, s: Services, user_id: int, subject: str) -> tuple[
 async def on_semester(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/semester [предмет] и текст: конспект на каждую тему. С предметом все они уходят в его раздел."""
     message = update.effective_message
+    docx_workflow.clear_pending(context)
     s = services(context)
     body = _semester_body(message.text) or ""
     subject, text, unknown = _split_semester(body, _all_subjects(s))
@@ -568,6 +617,9 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not await _agreed(update, context):
         return
+    if docx_workflow.is_document(message) or docx_workflow.is_waiting(context):
+        await docx_workflow.handle_document(update, context)
+        return
     attachment, name, mime = found
     limit = LOCAL_MAX_FILE_BYTES if s.config.local_mode else MAX_FILE_BYTES
     if (attachment.file_size or 0) > limit:
@@ -620,7 +672,8 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         source = Source(audio=body, name=name, mime=mime, path=path, split=split, subject=caption_subject)
         data.setdefault("batch", []).append(Incoming(message.message_id, source, _describe(message, name)))
     else:
-        await reply(message, f"{ui.e('warning')} Не понимаю этот файл. Пришлите аудио, видео или текст в формате .txt.")
+        await reply(message, f"{ui.e('warning')} Не понимаю этот файл. Пришлите аудио, видео, текст в формате .txt "
+                             "или DOCX для улучшения.")
     await _flush_later(update, context)
 
 
@@ -1127,11 +1180,14 @@ def build_application(config: Config) -> Application:
     application.add_handler(TypeHandler(Update, gate), group=-1)
     application.add_handler(CommandHandler("start", on_start))
     application.add_handler(CommandHandler("help", on_help))
+    application.add_handler(CommandHandler(["improve", "docx"], on_improve, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("clean", on_clean, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("cancel", on_cancel, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("settings", on_settings))
     application.add_handler(CommandHandler("keys", on_keys))
     application.add_handler(CommandHandler("setkey", on_setkey))
     application.add_handler(CommandHandler("forgetkey", on_forgetkey))
-    application.add_handler(CommandHandler("admin", admin.on_admin))
+    application.add_handler(CommandHandler("admin", on_admin_menu))
     application.add_handler(CallbackQueryHandler(on_settings_button, pattern=r"^st:"))
     application.add_handler(CallbackQueryHandler(on_keys_button, pattern=r"^ky:"))
     application.add_handler(CallbackQueryHandler(on_batch_button, pattern=r"^bt:"))
@@ -1142,7 +1198,7 @@ def build_application(config: Config) -> Application:
     application.add_handler(CommandHandler("topics", on_topics))
     application.add_handler(CommandHandler(list(SEMESTER_COMMANDS), on_semester, filters=filters.ChatType.PRIVATE))
     application.add_handler(CallbackQueryHandler(on_semester_button, pattern=r"^sm:"))
-    application.add_handler(CallbackQueryHandler(admin.on_admin_button, pattern=r"^ad:"))
+    application.add_handler(CallbackQueryHandler(on_admin_callback, pattern=r"^ad:"))
     application.add_handler(
         MessageHandler(
             (filters.VOICE | filters.AUDIO | filters.VIDEO | filters.VIDEO_NOTE | filters.Document.ALL

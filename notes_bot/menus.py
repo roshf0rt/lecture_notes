@@ -1,4 +1,4 @@
-"""Texts and keyboards for users: main menu, settings and Gemini keys. Texts are HTML."""
+"""Texts and keyboards for users: notes, document improvement, settings and keys."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -29,7 +29,8 @@ MENU_SETTINGS = "Настройки"
 MENU_KEYS = "Ключи Gemini"
 MENU_HELP = "Помощь"
 MENU_ADMIN = "Админка"
-MENU_LABELS = (MENU_SETTINGS, MENU_KEYS, MENU_HELP, MENU_ADMIN)
+MENU_DOCX = "Улучшить DOCX"
+MENU_LABELS = (MENU_SETTINGS, MENU_KEYS, MENU_DOCX, MENU_HELP, MENU_ADMIN)
 
 
 def menu_label(text: str) -> str | None:
@@ -46,12 +47,12 @@ def menu_label(text: str) -> str | None:
 def main_keyboard(ui: Ui, is_admin: bool) -> ReplyKeyboardMarkup:
     rows = [
         [ui.key("settings", MENU_SETTINGS), ui.key("key", MENU_KEYS)],
-        [ui.key("help", MENU_HELP)],
+        [ui.key("format", MENU_DOCX), ui.key("help", MENU_HELP)],
     ]
     if is_admin:
-        rows[1].append(ui.key("admin", MENU_ADMIN))
+        rows.append([ui.key("admin", MENU_ADMIN)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True,
-                               input_field_placeholder="Пришлите запись или текст лекции")
+                               input_field_placeholder="Запись, текст лекции или DOCX")
 
 
 def size_limit(local_api: bool) -> str:
@@ -61,15 +62,16 @@ def size_limit(local_api: bool) -> str:
 
 def welcome(ui: Ui, has_key: bool, shared: bool, local_api: bool = False) -> str:
     lines = [
-        f"{ui.e('hello')} <b>Привет! Я делаю конспекты лекций.</b>",
+        f"{ui.e('hello')} <b>Привет! Я делаю конспекты лекций и улучшаю документы Word.</b>",
         "",
         f"{ui.e('mic')} Пришлите голосовое, аудио или видео ({size_limit(local_api)}, любой частый формат: ogg, mp3, aac, m4a, wav, mp4…)",
         f"{ui.e('transcript')} или текст расшифровки сообщением либо файлом .txt.",
+        f"{ui.e('format')} Для улучшения файла Word пришлите DOCX или нажмите «{MENU_DOCX}». Ключи для этого не нужны.",
         "",
         f"{ui.e('settings')} В настройках выбираются формат (PDF или сообщения), длина, язык, цвета и блоки конспекта.",
     ]
     if not has_key:
-        lines += ["", f"{ui.e('key')} <b>Сначала нужен ключ Gemini.</b> Он бесплатный: создайте его в "
+        lines += ["", f"{ui.e('key')} <b>Для работы с лекциями сначала нужен ключ Gemini.</b> Он бесплатный: создайте его в "
                       f'<a href="{AI_STUDIO}">Google AI Studio</a> и пришлите сюда одним сообщением.']
         if shared:
             lines.append("Пока ключа нет, бот работает на общих ключах владельца.")
@@ -84,13 +86,18 @@ def help_text(ui: Ui, local_api: bool = False) -> str:
             f"{ui.e('mic')} <b>Запись.</b> Голосовое, аудио, видео или файл {size_limit(local_api)}. Формат определяется по содержимому, "
             "поэтому подойдут и файлы без расширения. Видео и редкие форматы бот сам переводит в аудио.",
             f"{ui.e('transcript')} <b>Текст.</b> Сообщением или файлом .txt, от 100 знаков.",
+            f"{ui.e('format')} <b>Улучшение DOCX.</b> Нажмите «{MENU_DOCX}» или /improve и пришлите файл Word до 20 МБ. "
+            "Бот запросит авторов и вернёт улучшенную копию. Для обработки одним сообщением добавьте к файлу подпись "
+            "<code>/clean Иван Иванов, Анна Петрова</code>. Ключи внешних сервисов не нужны. Отмена ввода: /cancel. "
+            "Обработка удаляет технический мусор, комментарии и скрытые фрагменты, принимает поддерживаемые исправления; "
+            "авторы записываются по вашему вводу, время и даты рассчитываются по объёму текста. Сохраняйте оригинал.",
             f"{ui.e('blocks')} <b>Семестр.</b> Перед текстом или подписью к файлу напишите <code>/semester</code>: бот разобьёт материал по темам и сделает конспект на каждую. Длинные тексты (больше 150 000 знаков) он делит так сам.",
             f"{ui.e('clip')} <b>Группа с разделами.</b> Внутри раздела напишите <code>/bind Физика</code>, и конспекты по физике можно отправлять в группу одной кнопкой. Список разделов: /topics.",
             f"{ui.e('key')} <b>Ключи.</b> Можно добавить несколько ключей Gemini: когда у одного кончается лимит, "
             "бот переходит на следующий. Квота общая на проект Google, поэтому ключи нужны из разных проектов или аккаунтов.",
             f"{ui.e('settings')} <b>Настройки.</b> Формат, длина, язык, оформление PDF.",
             "",
-            "Команды: /settings, /keys, /help.",
+            "Команды: /settings, /keys, /improve, /clean, /cancel, /help.",
         ]
     )
 
