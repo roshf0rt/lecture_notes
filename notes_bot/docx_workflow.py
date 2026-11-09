@@ -35,16 +35,23 @@ INSTRUCTIONS = (
     "Пришлите документ Word <code>.docx</code> — я удалю технический мусор и верну обработанную копию. "
     "Имена авторов запрошу отдельно. Чтобы сделать всё одним сообщением, добавьте к файлу подпись:\n"
     "<code>/clean Иван Иванов, Анна Петрова</code>\n\n"
+    "При необходимости укажите время в минутах и значение свойства Application через вертикальную черту:\n"
+    "<code>/clean Иван Иванов | 15 | Microsoft Office Word</code>\n"
+    "Эти два значения необязательны. Application — редактируемая подпись приложения, "
+    "она не подтверждает сохранение в Word.\n\n"
     "Обработка удаляет комментарии и скрытые фрагменты, принимает поддерживаемые исправления, "
-    "упорядочивает свойства и типографику. Сохраните оригинал и проверьте результат в Word. "
-    "Время редактирования и даты будут расчётными по объёму текста, а не фактической историей. "
+    "упорядочивает свойства и сохраняет тире, кавычки и многоточия. Сохраните оригинал и проверьте результат в Word. "
+    "Без указанного времени используется оценка проверки текста: 1000 знаков в минуту, от 1 до 120 минут. "
+    "Исходная корректная дата создания сохраняется; дата изменения — момент обработки. "
     "Файл обрабатывается на сервере бота, без обращения к сервисам создания конспектов; ключ не нужен. "
     "Лимит DOCX — 20 МБ. Отмена: /cancel."
 )
 AUTHOR_PROMPT = (
     "Укажите автора или нескольких авторов через запятую, одной строкой (до 200 символов). "
-    "Имена будут записаны в свойства DOCX. Время редактирования и даты будут расчётными, "
-    "а не сведениями о реальной работе. Комментарии, скрытые фрагменты и история поддерживаемых "
+    "Можно дополнительно указать минуты и Application: <code>Иван Иванов | 15 | Microsoft Office Word</code>. "
+    "Оба дополнительных значения необязательны. Имена будут записаны в свойства DOCX. "
+    "Без введённых минут время будет оценкой проверки текста, а не сведениями о реальной работе. "
+    "Application не подтверждает сохранение в соответствующем приложении. Комментарии, скрытые фрагменты и история поддерживаемых "
     "исправлений будут удалены. Для отмены: /cancel."
 )
 
@@ -54,6 +61,13 @@ class PendingDocument:
     file_id: str
     name: str
     created: float
+
+
+@dataclass(frozen=True)
+class DocumentRequest:
+    authors: list[str]
+    editing_minutes: int | None = None
+    application_name: str = "DOCX Improver"
 
 
 def is_document(message) -> bool:
@@ -85,6 +99,25 @@ def parse_authors(text: str) -> list[str]:
     if any(not name for name in names) or len("; ".join(names)) > 200:
         raise InvalidDocument("Укажите непустые имена через запятую, не более 200 символов в сумме, или /cancel.")
     return names
+
+
+def parse_request(text: str) -> DocumentRequest:
+    """Parse authors and optional editable properties without inferring provenance."""
+    pieces = text.split("|")
+    if len(pieces) > 3:
+        raise InvalidDocument("Используйте формат: Авторы | минуты | Application. Последние два поля необязательны.")
+    authors = parse_authors(pieces[0])
+    minutes = None
+    if len(pieces) >= 2 and pieces[1].strip():
+        value = pieces[1].strip()
+        if len(value) > 5 or not value.isascii() or not value.isdecimal() or not 0 <= int(value) <= 10080:
+            raise InvalidDocument("Время редактирования должно быть целым числом от 0 до 10080 минут.")
+        minutes = int(value)
+    application = pieces[2].strip() if len(pieces) == 3 and pieces[2].strip() else "DOCX Improver"
+    if (len(application) > 100 or any(ord(ch) < 32 or 0xD800 <= ord(ch) <= 0xDFFF or
+                                    ord(ch) in (0xFFFE, 0xFFFF) for ch in application)):
+        raise InvalidDocument("Application должно быть одной строкой длиной до 100 символов без управляющих знаков.")
+    return DocumentRequest(authors, minutes, application)
 
 
 def _pending(document) -> PendingDocument:
@@ -151,11 +184,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data["awaiting"] = AWAIT_AUTHORS
     if command is not None and command.group("authors"):
         try:
-            authors = parse_authors(command.group("authors"))
+            request = parse_request(command.group("authors"))
         except InvalidDocument as error:
             await reply(message, html(str(error)))
             return
-        await _process(update, context, pending, authors)
+        await _process(update, context, pending, request.authors,
+                       editing_minutes=request.editing_minutes, application_name=request.application_name)
     else:
         await reply(message, AUTHOR_PROMPT)
 
@@ -173,11 +207,12 @@ async def handle_authors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await reply(message, "Время ожидания документа истекло. Пришлите DOCX снова или отправьте /improve.")
         return
     try:
-        authors = parse_authors(message.text)
+        request = parse_request(message.text)
     except InvalidDocument as error:
         await reply(message, html(str(error)))
         return
-    await _process(update, context, pending, authors)
+    await _process(update, context, pending, request.authors,
+                   editing_minutes=request.editing_minutes, application_name=request.application_name)
 
 
 async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -206,11 +241,12 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             context.user_data["awaiting"] = AWAIT_AUTHORS
             await reply(message, AUTHOR_PROMPT)
             return
-        authors = parse_authors(command.group("authors"))
+        request = parse_request(command.group("authors"))
     except InvalidDocument as error:
         await reply(message, html(str(error)))
         return
-    await _process(update, context, pending, authors)
+    await _process(update, context, pending, request.authors,
+                   editing_minutes=request.editing_minutes, application_name=request.application_name)
 
 
 def _read_local(path: Path) -> bytes:
@@ -219,9 +255,11 @@ def _read_local(path: Path) -> bytes:
 
 
 def _report(counts) -> str:
+    duration_label = "указанное время" if counts.get("minutes_manual") else "оценка проверки текста"
+    created_label = "Дата создания сохранена" if counts.get("created_preserved") else "Дата создания установлена при обработке"
     text = (
-        f"Файл приведён в порядок. Символов: {counts['symbols']}; расчётное время: {counts['minutes']} мин. "
-        "Время и даты — оценка. "
+        f"Файл приведён в порядок. Символов: {counts['symbols']}; {duration_label}: {counts['minutes']} мин. "
+        f"{created_label}; дата изменения — момент обработки. Свойства не подтверждают историю работы. "
         f"Удалено невидимых символов: {counts['invisible']}; служебных маркеров: {counts['citations']}; "
         f"изменено ссылок: {counts['links']}. "
         f"Комментарии: {counts.get('comments', 0)}; принято исправлений: {counts.get('revisions', 0)}; "
@@ -233,7 +271,8 @@ def _report(counts) -> str:
 
 
 async def _process(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                   pending: PendingDocument, authors: list[str]) -> None:
+                   pending: PendingDocument, authors: list[str], *, editing_minutes: int | None = None,
+                   application_name: str = "DOCX Improver") -> None:
     message = update.effective_message
     user_id = update.effective_user.id
     s = services(context)
@@ -266,7 +305,9 @@ async def _process(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     raise InvalidDocument("Максимальный размер DOCX для улучшения — 20 МБ.")
                 # A thread must finish before active.jobs becomes zero, even if
                 # the update task is cancelled during application shutdown.
-                worker = asyncio.create_task(asyncio.to_thread(clean_docx, body, True, authors))
+                worker = asyncio.create_task(asyncio.to_thread(clean_docx, body, True, authors,
+                                                               editing_minutes=editing_minutes,
+                                                               application_name=application_name))
                 try:
                     result, counts = await asyncio.shield(worker)
                 except asyncio.CancelledError:

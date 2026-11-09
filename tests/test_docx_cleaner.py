@@ -6,8 +6,8 @@ Test-only dependency: python-docx>=1.2,<2
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
 from io import BytesIO
-import math
 import posixpath
 import struct
 import unittest
@@ -30,12 +30,14 @@ PNG = base64.b64decode(
 )
 
 
-def package_edit(content: bytes, *, replacements=None, additions=None) -> bytes:
+def package_edit(content: bytes, *, replacements=None, additions=None, removed=()) -> bytes:
     replacements = replacements or {}
     additions = additions or {}
     output = BytesIO()
     with ZipFile(BytesIO(content)) as source, ZipFile(output, 'w', ZIP_DEFLATED) as result:
         for name in source.namelist():
+            if name in removed:
+                continue
             result.writestr(name, replacements.get(name, source.read(name)))
         for name, data in additions.items():
             result.writestr(name, data)
@@ -170,9 +172,127 @@ class DocxCleanerTests(unittest.TestCase):
             self.assertFalse(any(name.startswith('customXml/') for name in after.namelist()))
             self.assertFalse(any('comments' in name.lower() for name in after.namelist()))
             minutes = int(etree.fromstring(after.read('docProps/app.xml')).find(f'{{{APP}}}TotalTime').text)
-            self.assertEqual(minutes, max(1, math.ceil(counts['symbols'] * 60 / 1000)))
-            span = result.core_properties.modified - result.core_properties.created
-            self.assertEqual(span.total_seconds(), minutes * 60)
+            self.assertEqual(minutes, counts['minutes'])
+            self.assertEqual(result.core_properties.created, Document(BytesIO(source)).core_properties.created)
+            self.assertGreater(result.core_properties.modified, result.core_properties.created)
+
+    def test_review_time_is_short_bounded_and_not_inferred_as_creation_date(self):
+        for length, expected in ((0, 1), (14950, 15), (150000, 120)):
+            with self.subTest(length=length):
+                source = Document()
+                source.core_properties.created = datetime(2020, 5, 6, 7, 8, 9, tzinfo=timezone.utc)
+                source.add_paragraph('а' * length)
+                buf = BytesIO(); source.save(buf)
+                before = datetime.now(timezone.utc).replace(microsecond=0)
+                output, counts = clean_docx(buf.getvalue(), True, ['Перескоков Иван'])
+                after = datetime.now(timezone.utc)
+                result = Document(BytesIO(output))
+                self.assertEqual(counts['minutes'], expected)
+                self.assertEqual(counts['minutes_manual'], 0)
+                self.assertEqual(result.core_properties.created, source.core_properties.created)
+                self.assertLessEqual(before, result.core_properties.modified)
+                self.assertLessEqual(result.core_properties.modified, after)
+                with ZipFile(BytesIO(output)) as z:
+                    app = etree.fromstring(z.read('docProps/app.xml'))
+                    self.assertEqual(app.find(f'{{{APP}}}TotalTime').text, str(expected))
+                    self.assertEqual(app.find(f'{{{APP}}}Application').text, 'DOCX Improver')
+
+    def test_manual_time_and_application_are_metadata_values_only(self):
+        source = fixture()
+        output, counts = clean_docx(source, True, ['Перескоков Иван'], editing_minutes=12,
+                                    application_name='Microsoft Office Word')
+        self.assertEqual(counts['minutes'], 12)
+        self.assertEqual(counts['minutes_manual'], 1)
+        result = Document(BytesIO(output))
+        self.assertEqual(result.core_properties.created, Document(BytesIO(source)).core_properties.created)
+        with ZipFile(BytesIO(output)) as z:
+            app = etree.fromstring(z.read('docProps/app.xml'))
+            self.assertEqual(app.find(f'{{{APP}}}Application').text, 'Microsoft Office Word')
+            self.assertEqual(app.find(f'{{{APP}}}TotalTime').text, '12')
+        for minutes in (-1, 10081, True, 1.5, '15'):
+            with self.subTest(minutes=minutes), self.assertRaises(InvalidDocument):
+                clean_docx(source, True, ['Author'], editing_minutes=minutes)
+        for application in ('', 'x' * 101, 'Word\x00test'):
+            with self.subTest(application=repr(application)), self.assertRaises(InvalidDocument):
+                clean_docx(source, True, ['Author'], application_name=application)
+
+    def test_missing_settings_part_is_created_with_valid_relationship_and_type(self):
+        source = fixture()
+        with ZipFile(BytesIO(source)) as z:
+            rels = etree.fromstring(z.read('word/_rels/document.xml.rels'))
+            types = etree.fromstring(z.read('[Content_Types].xml'))
+        for el in list(rels):
+            if el.get('Type', '').endswith('/settings'):
+                rels.remove(el)
+        for el in list(types):
+            if el.get('PartName') == '/word/settings.xml':
+                types.remove(el)
+        source = package_edit(source, replacements={
+            'word/_rels/document.xml.rels': etree.tostring(rels),
+            '[Content_Types].xml': etree.tostring(types),
+        }, removed={'word/settings.xml'})
+        output, _ = clean_docx(source, True, ['Author'])
+        self.assert_package_integrity(output)
+        result = Document(BytesIO(output))
+        self.assertEqual(result.settings.element.tag, f'{{{W}}}settings')
+        with ZipFile(BytesIO(output)) as z:
+            rels = etree.fromstring(z.read('word/_rels/document.xml.rels'))
+            settings = [el for el in rels if el.get('Type', '').endswith('/settings')]
+            self.assertEqual(len(settings), 1)
+            self.assertEqual(settings[0].get('Target'), 'settings.xml')
+            types = etree.fromstring(z.read('[Content_Types].xml'))
+            overrides = [el for el in types if el.get('PartName') == '/word/settings.xml']
+            self.assertEqual(len(overrides), 1)
+            self.assertEqual(overrides[0].get('ContentType'),
+                             'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml')
+
+    def test_existing_settings_at_custom_path_preserve_visible_options(self):
+        source = fixture()
+        custom = 'word/comments-settings.xml'
+        with ZipFile(BytesIO(source)) as z:
+            rels = etree.fromstring(z.read('word/_rels/document.xml.rels'))
+            types = etree.fromstring(z.read('[Content_Types].xml'))
+            settings = etree.fromstring(z.read('word/settings.xml'))
+        zoom = settings.find(f'{{{W}}}zoom')
+        if zoom is None:
+            zoom = etree.SubElement(settings, f'{{{W}}}zoom')
+        zoom.set(f'{{{W}}}percent', '85')
+        for el in rels:
+            if el.get('Type', '').endswith('/settings'):
+                el.set('Target', posixpath.basename(custom))
+        for el in types:
+            if el.get('PartName') == '/word/settings.xml':
+                el.set('PartName', '/' + custom)
+        source = package_edit(source, replacements={
+            'word/_rels/document.xml.rels': etree.tostring(rels),
+            '[Content_Types].xml': etree.tostring(types),
+        }, additions={custom: etree.tostring(settings)}, removed={'word/settings.xml'})
+        output, _ = clean_docx(source, True, ['Author'])
+        self.assert_package_integrity(output)
+        result = Document(BytesIO(output))
+        self.assertEqual(result.settings.element.find(f'{{{W}}}zoom').get(f'{{{W}}}percent'), '85')
+        with ZipFile(BytesIO(output)) as z:
+            self.assertIn(custom, z.namelist())
+            self.assertNotIn('word/settings.xml', z.namelist())
+
+    def test_missing_creation_date_uses_processing_time_and_xml_headers_are_valid(self):
+        source = fixture()
+        with ZipFile(BytesIO(source)) as z:
+            core = etree.fromstring(z.read('docProps/core.xml'))
+        created_tag = '{http://purl.org/dc/terms/}created'
+        for el in core.findall(created_tag):
+            core.remove(el)
+        source = package_edit(source, replacements={'docProps/core.xml': etree.tostring(core)})
+        before = datetime.now(timezone.utc).replace(microsecond=0)
+        output, _ = clean_docx(source, True, ['Author'], editing_minutes=20)
+        result = Document(BytesIO(output))
+        self.assertGreaterEqual(result.core_properties.created, before)
+        self.assertEqual(result.core_properties.created, result.core_properties.modified)
+        with ZipFile(BytesIO(output)) as z:
+            for path in ('docProps/core.xml', 'docProps/app.xml', 'word/document.xml', 'word/settings.xml'):
+                data = z.read(path)
+                self.assertTrue(data.startswith(b'<?xml version="1.0" encoding="UTF-8"'), path)
+                etree.fromstring(data)
 
     def test_basic_mode_keeps_comments_hidden_content_and_revisions(self):
         output, _ = clean_docx(fixture(), False, ['Author'])
