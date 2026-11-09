@@ -16,8 +16,6 @@ W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 XML_SPACE = '{http://www.w3.org/XML/1998/namespace}space'
 INVISIBLE = re.compile('[\u200b\u2060\ufeff\u00ad\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]')
 SPACES = str.maketrans({c: ' ' for c in '\u00a0\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u202f\u205f\u3000'})
-TYPOGRAPHY = {'\u2013': '-', '\u2014': '-', '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"', '\u2026': '...'}
-TYPOGRAPHY_PATTERN = re.compile('[' + ''.join(TYPOGRAPHY) + ']')
 CITATIONS = re.compile(
     r'(?:cite|filecite|navlist|products|finance|forecast|schedule|standing)[^]*'
     r'|:contentReference\[oaicite:\d+\](?:\{[^}]*\})?'
@@ -187,22 +185,12 @@ def _clean_group(elements, deep: bool, counts: Counter) -> bool:
     changed = _apply_edits(elements, edits) or changed
     text = ''.join(element.text or '' for element in elements)
     edits = []
-    outside_start = 0
     for match in URLS.finditer(text):
-        if deep:
-            for mark in TYPOGRAPHY_PATTERN.finditer(text, outside_start, match.start()):
-                edits.append((mark.start(), mark.end(), TYPOGRAPHY[mark.group()]))
-                counts['typography'] += 1
         candidate = match.group()[:_prose_url_end(match.group())]
         url_edits = _utm_edits(candidate)
         if url_edits:
             counts['links'] += 1
             edits.extend((match.start() + start, match.start() + end, replacement) for start, end, replacement in url_edits)
-        outside_start = match.end()
-    if deep:
-        for mark in TYPOGRAPHY_PATTERN.finditer(text, outside_start):
-            edits.append((mark.start(), mark.end(), TYPOGRAPHY[mark.group()]))
-            counts['typography'] += 1
     return _apply_edits(elements, edits) or changed
 
 

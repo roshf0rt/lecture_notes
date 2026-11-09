@@ -12,15 +12,17 @@ import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zipfile import ZipFile
 
 from docx import Document
+from lxml import etree
 import pytest
 from telegram.ext import ApplicationHandlerStop
 
 from notes_bot import admin, bot, docx_workflow
 from notes_bot.agreement import AGREEMENT_VERSION
 from notes_bot.config import Config
-from notes_bot.docx_cleaner import MAX_INPUT
+from notes_bot.docx_cleaner import APP, MAX_INPUT
 from notes_bot.keys import KeyVault
 from notes_bot.services import Services
 from notes_bot.settings import SettingsStore
@@ -135,6 +137,59 @@ def test_caption_improves_docx_without_model_key(tmp_path):
     assert result.core_properties.author == "Иван Иванов; Анна Петрова"
     assert result.core_properties.last_modified_by == "Анна Петрова"
     assert result.core_properties.created < result.core_properties.modified
+
+
+@pytest.mark.parametrize('suffix, expected_minutes, expected_application', [
+    (' | 15 | Microsoft Office Word', 15, 'Microsoft Office Word'),
+    (' | 0', 0, 'DOCX Improver'),
+    (' | | Microsoft Office Word', None, 'Microsoft Office Word'),
+])
+def test_caption_can_set_editing_properties_without_fabricating_creation(tmp_path, suffix,
+                                                                        expected_minutes, expected_application):
+    h = Harness(tmp_path)
+    source_created = Document(BytesIO(h.data)).core_properties.created
+    message = h.send(bot.on_media, Message(document=h.attachment, caption='/clean Перескоков Иван' + suffix))
+    result = h.output(message)
+    assert result.core_properties.author == 'Перескоков Иван'
+    assert result.core_properties.created == source_created
+    upload = next(reply for reply in message.replies if 'document' in reply)
+    with ZipFile(BytesIO(upload['document'])) as z:
+        app = etree.fromstring(z.read('docProps/app.xml'))
+        assert app.find(f'{{{APP}}}Application').text == expected_application
+        minutes = int(app.find(f'{{{APP}}}TotalTime').text)
+        if expected_minutes is None:
+            assert minutes == 1
+        else:
+            assert minutes == expected_minutes
+            assert 'указанное время' in upload['caption'].lower()
+
+
+def test_author_followup_accepts_metadata_options_and_returns_docx(tmp_path, monkeypatch):
+    h = Harness(tmp_path)
+    lecture = AsyncMock()
+    monkeypatch.setattr(bot, '_run_job', lecture)
+    h.send(bot.on_media, Message(document=h.attachment))
+    message = h.send(bot.on_text, Message(text='Перескоков Иван | 8 | Microsoft Office Word'))
+    assert h.output(message).core_properties.author == 'Перескоков Иван'
+    upload = next(reply for reply in message.replies if 'document' in reply)
+    with ZipFile(BytesIO(upload['document'])) as z:
+        app = etree.fromstring(z.read('docProps/app.xml'))
+        assert app.find(f'{{{APP}}}TotalTime').text == '8'
+        assert app.find(f'{{{APP}}}Application').text == 'Microsoft Office Word'
+    lecture.assert_not_awaited()
+
+
+@pytest.mark.parametrize('options', [
+    'Автор | -1', 'Автор | 1.5', 'Автор | вчера', 'Автор | 10081',
+    'Автор | 15 | ' + 'x' * 101, 'Автор | 15 | Word\x00test',
+    'Автор | 15 | Word | лишнее',
+])
+def test_invalid_metadata_options_are_reported_before_download(tmp_path, options):
+    h = Harness(tmp_path)
+    message = h.send(bot.on_media, Message(document=h.attachment, caption='/clean ' + options))
+    assert any('text' in reply for reply in message.replies)
+    assert not any('document' in reply for reply in message.replies)
+    h.context.bot.get_file.assert_not_awaited()
 
 
 def test_bare_docx_asks_authors_and_followup_is_not_lecture(tmp_path, monkeypatch):
