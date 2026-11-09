@@ -176,8 +176,8 @@ class DocxCleanerTests(unittest.TestCase):
             self.assertEqual(result.core_properties.created, Document(BytesIO(source)).core_properties.created)
             self.assertGreater(result.core_properties.modified, result.core_properties.created)
 
-    def test_review_time_is_short_bounded_and_not_inferred_as_creation_date(self):
-        for length, expected in ((0, 1), (14950, 15), (150000, 120)):
+    def test_preparation_time_is_bounded_and_not_inferred_as_creation_date(self):
+        for length, expected in ((0, 0), (1, 5), (14950, 90), (150000, 240)):
             with self.subTest(length=length):
                 source = Document()
                 source.core_properties.created = datetime(2020, 5, 6, 7, 8, 9, tzinfo=timezone.utc)
@@ -195,7 +195,7 @@ class DocxCleanerTests(unittest.TestCase):
                 with ZipFile(BytesIO(output)) as z:
                     app = etree.fromstring(z.read('docProps/app.xml'))
                     self.assertEqual(app.find(f'{{{APP}}}TotalTime').text, str(expected))
-                    self.assertEqual(app.find(f'{{{APP}}}Application').text, 'DOCX Improver')
+                    self.assertEqual(app.find(f'{{{APP}}}Application').text, 'Microsoft Office Word')
 
     def test_manual_time_and_application_are_metadata_values_only(self):
         source = fixture()

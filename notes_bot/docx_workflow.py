@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from .docx_cleaner import MAX_INPUT, InvalidDocument, clean_docx
+from .docx_cleaner import DEFAULT_APPLICATION, MAX_INPUT, InvalidDocument, clean_docx
 from .services import reply, services
 from .ui import html
 
@@ -35,23 +35,21 @@ INSTRUCTIONS = (
     "Пришлите документ Word <code>.docx</code> — я удалю технический мусор и верну обработанную копию. "
     "Имена авторов запрошу отдельно. Чтобы сделать всё одним сообщением, добавьте к файлу подпись:\n"
     "<code>/clean Иван Иванов, Анна Петрова</code>\n\n"
-    "При необходимости укажите время в минутах и значение свойства Application через вертикальную черту:\n"
-    "<code>/clean Иван Иванов | 15 | Microsoft Office Word</code>\n"
-    "Эти два значения необязательны. Application — редактируемая подпись приложения, "
-    "она не подтверждает сохранение в Word.\n\n"
+    "Достаточно имён авторов: время подготовки текста и свойства приложения бот заполнит автоматически. "
+    "Application будет записано как Microsoft Office Word. Это редактируемое свойство, "
+    "оно не подтверждает сохранение в Word.\n\n"
     "Обработка удаляет комментарии и скрытые фрагменты, принимает поддерживаемые исправления, "
     "упорядочивает свойства и сохраняет тире, кавычки и многоточия. Сохраните оригинал и проверьте результат в Word. "
-    "Без указанного времени используется оценка проверки текста: 1000 знаков в минуту, от 1 до 120 минут. "
+    "Время — оценка подготовки и редактирования по объёму: около 90 минут для 15 тысяч знаков, до 4 часов. "
     "Исходная корректная дата создания сохраняется; дата изменения — момент обработки. "
     "Файл обрабатывается на сервере бота, без обращения к сервисам создания конспектов; ключ не нужен. "
     "Лимит DOCX — 20 МБ. Отмена: /cancel."
 )
 AUTHOR_PROMPT = (
     "Укажите автора или нескольких авторов через запятую, одной строкой (до 200 символов). "
-    "Можно дополнительно указать минуты и Application: <code>Иван Иванов | 15 | Microsoft Office Word</code>. "
-    "Оба дополнительных значения необязательны. Имена будут записаны в свойства DOCX. "
-    "Без введённых минут время будет оценкой проверки текста, а не сведениями о реальной работе. "
-    "Application не подтверждает сохранение в соответствующем приложении. Комментарии, скрытые фрагменты и история поддерживаемых "
+    "Остальные свойства бот заполнит автоматически: время будет оценкой по объёму текста, "
+    "Application — Microsoft Office Word. Эти свойства не подтверждают историю работы. "
+    "Комментарии, скрытые фрагменты и история поддерживаемых "
     "исправлений будут удалены. Для отмены: /cancel."
 )
 
@@ -67,7 +65,7 @@ class PendingDocument:
 class DocumentRequest:
     authors: list[str]
     editing_minutes: int | None = None
-    application_name: str = "DOCX Improver"
+    application_name: str = DEFAULT_APPLICATION
 
 
 def is_document(message) -> bool:
@@ -113,7 +111,7 @@ def parse_request(text: str) -> DocumentRequest:
         if len(value) > 5 or not value.isascii() or not value.isdecimal() or not 0 <= int(value) <= 10080:
             raise InvalidDocument("Время редактирования должно быть целым числом от 0 до 10080 минут.")
         minutes = int(value)
-    application = pieces[2].strip() if len(pieces) == 3 and pieces[2].strip() else "DOCX Improver"
+    application = pieces[2].strip() if len(pieces) == 3 and pieces[2].strip() else DEFAULT_APPLICATION
     if (len(application) > 100 or any(ord(ch) < 32 or 0xD800 <= ord(ch) <= 0xDFFF or
                                     ord(ch) in (0xFFFE, 0xFFFF) for ch in application)):
         raise InvalidDocument("Application должно быть одной строкой длиной до 100 символов без управляющих знаков.")
@@ -255,7 +253,7 @@ def _read_local(path: Path) -> bytes:
 
 
 def _report(counts) -> str:
-    duration_label = "указанное время" if counts.get("minutes_manual") else "оценка проверки текста"
+    duration_label = "указанное время" if counts.get("minutes_manual") else "оценка подготовки текста"
     created_label = "Дата создания сохранена" if counts.get("created_preserved") else "Дата создания установлена при обработке"
     text = (
         f"Файл приведён в порядок. Символов: {counts['symbols']}; {duration_label}: {counts['minutes']} мин. "
@@ -272,7 +270,7 @@ def _report(counts) -> str:
 
 async def _process(update: Update, context: ContextTypes.DEFAULT_TYPE,
                    pending: PendingDocument, authors: list[str], *, editing_minutes: int | None = None,
-                   application_name: str = "DOCX Improver") -> None:
+                   application_name: str = DEFAULT_APPLICATION) -> None:
     message = update.effective_message
     user_id = update.effective_user.id
     s = services(context)
