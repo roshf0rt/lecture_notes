@@ -139,10 +139,31 @@ def test_caption_improves_docx_without_model_key(tmp_path):
     assert result.core_properties.created < result.core_properties.modified
 
 
+def test_authors_only_automatically_fill_time_and_application(tmp_path):
+    h = Harness(tmp_path)
+    source = Document()
+    source.add_paragraph('А' * 14950)
+    buffer = BytesIO()
+    source.save(buffer)
+    h.data = buffer.getvalue()
+    h.attachment.file_size = len(h.data)
+    message = h.send(bot.on_media, Message(document=h.attachment, caption='/clean Перескоков Иван'))
+    result = h.output(message)
+    assert result.core_properties.author == 'Перескоков Иван'
+    assert result.core_properties.created == source.core_properties.created
+    assert len([reply for reply in message.replies if 'text' in reply]) == 1
+    upload = next(reply for reply in message.replies if 'document' in reply)
+    with ZipFile(BytesIO(upload['document'])) as z:
+        app = etree.fromstring(z.read('docProps/app.xml'))
+        assert app.find(f'{{{APP}}}TotalTime').text == '90'
+        assert app.find(f'{{{APP}}}Application').text == 'Microsoft Office Word'
+    assert 'оценка подготовки текста' in upload['caption'].lower()
+
+
 @pytest.mark.parametrize('suffix, expected_minutes, expected_application', [
     (' | 15 | Microsoft Office Word', 15, 'Microsoft Office Word'),
-    (' | 0', 0, 'DOCX Improver'),
-    (' | | Microsoft Office Word', None, 'Microsoft Office Word'),
+    (' | 0', 0, 'Microsoft Office Word'),
+    (' | | LibreOffice Writer', None, 'LibreOffice Writer'),
 ])
 def test_caption_can_set_editing_properties_without_fabricating_creation(tmp_path, suffix,
                                                                         expected_minutes, expected_application):
@@ -158,7 +179,7 @@ def test_caption_can_set_editing_properties_without_fabricating_creation(tmp_pat
         assert app.find(f'{{{APP}}}Application').text == expected_application
         minutes = int(app.find(f'{{{APP}}}TotalTime').text)
         if expected_minutes is None:
-            assert minutes == 1
+            assert minutes == 5
         else:
             assert minutes == expected_minutes
             assert 'указанное время' in upload['caption'].lower()
