@@ -119,7 +119,7 @@ class Harness:
     def output(self, message):
         replies = [reply for reply in message.replies if "document" in reply]
         assert len(replies) == 1
-        assert replies[0]["filename"].endswith(".docx")
+        assert replies[0]["filename"] == "lecture.docx"
         result = Document(BytesIO(replies[0]["document"]))
         assert "\u200b" not in result.paragraphs[0].text
         assert "\u00a0" not in result.paragraphs[0].text

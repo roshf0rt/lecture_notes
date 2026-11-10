@@ -6,7 +6,7 @@ Test-only dependency: python-docx>=1.2,<2
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import posixpath
 import struct
@@ -167,7 +167,7 @@ class DocxCleanerTests(unittest.TestCase):
                 if name.endswith(('.xml', '.rels')):
                     data = after.read(name)
                     for secret in (b'Previous Comment Author', b'Previous Revision Author',
-                                   b'Private comment payload', b'Private variable payload', b'rsid'):
+                                   b'Private comment payload', b'Private variable payload'):
                         self.assertFalse(secret in data, f'{secret!r} remains in {name}')
             self.assertFalse(any(name.startswith('customXml/') for name in after.namelist()))
             self.assertFalse(any('comments' in name.lower() for name in after.namelist()))
@@ -175,6 +175,94 @@ class DocxCleanerTests(unittest.TestCase):
             self.assertEqual(minutes, counts['minutes'])
             self.assertEqual(result.core_properties.created, Document(BytesIO(source)).core_properties.created)
             self.assertGreater(result.core_properties.modified, result.core_properties.created)
+
+    def test_existing_revision_session_ids_are_preserved_without_new_history(self):
+        source = fixture()
+        with ZipFile(BytesIO(source)) as z:
+            document = etree.fromstring(z.read('word/document.xml'))
+            settings = etree.fromstring(z.read('word/settings.xml'))
+        run = document.find(f'.//{{{W}}}r')
+        run.set(f'{{{W}}}rsidR', '00112233')
+        run.set(f'{{{W}}}rsidRPr', '00445566')
+        for old in list(settings.findall(f'{{{W}}}rsids')):
+            settings.remove(old)
+        sessions = etree.SubElement(settings, f'{{{W}}}rsids')
+        etree.SubElement(sessions, f'{{{W}}}rsidRoot').set(f'{{{W}}}val', '00112233')
+        etree.SubElement(sessions, f'{{{W}}}rsid').set(f'{{{W}}}val', '00445566')
+        source = package_edit(source, replacements={
+            'word/document.xml': etree.tostring(document),
+            'word/settings.xml': etree.tostring(settings),
+        })
+        output, _ = clean_docx(source, True, ['Author'])
+        self.assert_package_integrity(output)
+        result = Document(BytesIO(output))
+        self.assertEqual(result.paragraphs[0].text, 'Заголовок — текст с пробелами…')
+        with ZipFile(BytesIO(output)) as z:
+            processed = etree.fromstring(z.read('word/document.xml'))
+            processed_settings = etree.fromstring(z.read('word/settings.xml'))
+        def ids(root):
+            return {(etree.QName(key).localname, value)
+                    for node in root.iter() for key, value in node.attrib.items()
+                    if etree.QName(key).namespace == W and etree.QName(key).localname.startswith('rsid')}
+        self.assertEqual(ids(processed), ids(document))
+        self.assertEqual(
+            etree.tostring(processed_settings.find(f'{{{W}}}rsids'), method='c14n'),
+            etree.tostring(sessions, method='c14n'),
+        )
+
+    def test_package_without_revision_session_ids_does_not_gain_any(self):
+        document = Document()
+        document.add_paragraph('Обычный текст без истории сеансов.')
+        for root in (document.element, document.settings.element):
+            for node in list(root.iter()):
+                if not isinstance(node.tag, str):
+                    continue
+                for key in list(node.attrib):
+                    if etree.QName(key).namespace == W and etree.QName(key).localname.startswith('rsid'):
+                        del node.attrib[key]
+                if node.tag in (f'{{{W}}}rsids', f'{{{W}}}rsid') and node.getparent() is not None:
+                    node.getparent().remove(node)
+        buf = BytesIO(); document.save(buf)
+        output, _ = clean_docx(buf.getvalue(), True, ['Author'])
+        with ZipFile(BytesIO(output)) as z:
+            for name in ('word/document.xml', 'word/settings.xml'):
+                root = etree.fromstring(z.read(name))
+                for node in root.iter():
+                    self.assertNotIn(node.tag, (f'{{{W}}}rsids', f'{{{W}}}rsid'))
+                    for key in node.attrib:
+                        self.assertFalse(etree.QName(key).namespace == W and
+                                         etree.QName(key).localname.startswith('rsid'))
+
+    def test_zip_entries_use_processing_time_and_portable_creator_profile(self):
+        for deep in (False, True):
+            with self.subTest(deep=deep):
+                before = datetime.now(timezone.utc)
+                output, _ = clean_docx(fixture(), deep, ['Author'])
+                after = datetime.now(timezone.utc)
+                self.assert_package_integrity(output)
+                Document(BytesIO(output))
+                with ZipFile(BytesIO(output)) as z:
+                    for entry in z.infolist():
+                        timestamp = datetime(*entry.date_time, tzinfo=timezone.utc)
+                        # ZIP timestamps have no timezone field and a two-second resolution.
+                        self.assertGreaterEqual(timestamp, before - timedelta(seconds=2))
+                        self.assertLessEqual(timestamp, after)
+                        self.assertEqual(entry.create_system, 0)
+
+    def test_identically_formatted_text_fragments_are_compacted_without_content_changes(self):
+        document = Document()
+        paragraph = document.add_paragraph()
+        fragments = ['Слово — «пример»… ' for _ in range(700)]
+        for text in fragments:
+            paragraph.add_run(text).bold = True
+        source = BytesIO(); document.save(source)
+        output, counts = clean_docx(source.getvalue(), True, ['Author'])
+        self.assert_package_integrity(output)
+        result = Document(BytesIO(output))
+        self.assertEqual(result.paragraphs[0].text, ''.join(fragments))
+        self.assertEqual(len(result.paragraphs[0].runs), 1)
+        self.assertTrue(result.paragraphs[0].runs[0].bold)
+        self.assertEqual(counts['runs_merged'], 699)
 
     def test_preparation_time_is_bounded_and_not_inferred_as_creation_date(self):
         for length, expected in ((0, 0), (1, 5), (14950, 90), (150000, 240)):

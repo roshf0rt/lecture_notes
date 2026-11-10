@@ -10,7 +10,7 @@ import re
 from urllib.parse import unquote, urlsplit
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile, ZipInfo
 from lxml import etree
-from .docx_text import clean_text, clean_word_text, strip_utm
+from .docx_text import clean_text, clean_word_text, compact_word_runs, strip_utm
 
 MAX_INPUT = 20 * 1024 * 1024
 MAX_UNPACKED = 100 * 1024 * 1024
@@ -51,7 +51,7 @@ REMOVE_MARKERS = {
     'customXmlMoveToRangeStart', 'customXmlMoveToRangeEnd',
     'rPrChange', 'pPrChange', 'tblPrChange', 'tblGridChange', 'trPrChange',
     'tcPrChange', 'sectPrChange', 'numberingChange',
-    'docVars', 'rsids', 'rsid', 'trackRevisions', 'dataBinding', 'printerSettings', 'attachedTemplate',
+    'docVars', 'trackRevisions', 'dataBinding', 'printerSettings', 'attachedTemplate',
 }
 
 class InvalidDocument(ValueError):
@@ -283,8 +283,7 @@ def _clean_structure(root, hidden, counts: Counter) -> bool:
             continue
         for attr in list(node.attrib):
             qname = etree.QName(attr)
-            if ((qname.namespace == W and qname.localname.startswith('rsid')) or
-                (qname.namespace in (W14, W15) and qname.localname in ('paraId', 'textId', 'docId'))):
+            if qname.namespace in (W14, W15) and qname.localname in ('paraId', 'textId', 'docId'):
                 del node.attrib[attr]; counts['revision_ids'] += 1; changed = True
         if any(attr in node.attrib for attr in (f'{{{W}}}author', f'{{{W}}}date')):
             raise InvalidDocument('Есть неподдерживаемые данные исправлений. Примите все исправления в Word перед обработкой.')
@@ -487,6 +486,7 @@ def clean_docx(content: bytes, deep: bool = True, authors: list[str] | None = No
             elif (name.startswith('word/') and name.endswith('.xml')) or name == settings_part:
                 if deep and _clean_structure(root, hidden, counts): dirty.add(name)
                 if clean_word_text(root, deep, counts): dirty.add(name)
+                if compact_word_runs(root, counts): dirty.add(name)
             elif name in DOC_PROPS and not deep:
                 if _strip_generators(root, counts): dirty.add(name)
         if deep:
@@ -540,9 +540,17 @@ def clean_docx(content: bytes, deep: bool = True, authors: list[str] | None = No
             if name in parts: parts[name] = serialize(roots[name], parts[name])
         # Metadata is synthesized separately; do not overwrite it from old roots.
         output = BytesIO()
+        # ZIP timestamps have no timezone and two-second precision. Write the
+        # actual packaging time in UTC, using a portable DOS-compatible header.
+        # The header describes an archive convention, not its author's OS.
+        packed_at = datetime.now(timezone.utc)
+        zip_timestamp = packed_at.timetuple()[:6]
         with ZipFile(output, 'w', compression=ZIP_DEFLATED) as zout:
             for name, data in parts.items():
-                entry = ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0)); entry.compress_type = ZIP_DEFLATED
+                entry = ZipInfo(name, date_time=zip_timestamp)
+                entry.compress_type = ZIP_DEFLATED
+                entry.create_system = 0
+                entry.external_attr = 0x20  # DOS archive bit, without Unix mode bits.
                 if name.endswith(('.xml', '.rels')):
                     data = _normalize_declaration(data)
                 zout.writestr(entry, data)
