@@ -251,3 +251,88 @@ def clean_word_text(root, deep: bool, counts: Counter) -> bool:
         if element.tag in TEXT_TAGS and element not in processed:
             changed = _clean_group([element], deep, counts) or changed
     return changed
+
+
+def compact_word_runs(root, counts: Counter) -> bool:
+    """Coalesce adjacent ordinary text runs with identical explicit formatting.
+
+    Run attributes, including revision session IDs, are part of the comparison.
+    Fields and tracked containers are left alone, and non-run siblings always
+    end a group. Existing text, punctuation and whitespace are preserved.
+    """
+    run_tag = f'{{{W}}}r'
+    text_tag = f'{{{W}}}t'
+    props_tag = f'{{{W}}}rPr'
+    field_tags = {f'{{{W}}}{name}' for name in ('fldChar', 'instrText', 'delInstrText')}
+    owners = {f'{{{W}}}{name}' for name in ('p', 'hyperlink', 'sdtContent', 'smartTag', 'customXml')}
+    before = sum(1 for _ in root.iter(run_tag))
+    counts['runs_before'] += before
+    blocked_paragraphs = {
+        paragraph
+        for node in root.iter()
+        if node.tag in field_tags
+        for paragraph in node.iterancestors(PARAGRAPH)
+    }
+
+    def signature(run):
+        if run.tag != run_tag or (run.text and run.text.strip()):
+            return None
+        children = list(run)
+        properties = children[0] if children and children[0].tag == props_tag else None
+        texts = children[1:] if properties is not None else children
+        if not texts or any(node.tag != text_tag or len(node) or
+                            (node.tail and node.tail.strip()) for node in texts):
+            return None
+        # Default-space runs can hide boundary whitespace in Word. Making that
+        # whitespace internal to a merged node could change the rendered text.
+        if any(node.text and node.get(XML_SPACE) != 'preserve' and
+               (node.text[0].isspace() or node.text[-1].isspace()) for node in texts):
+            return None
+        attributes = tuple(sorted((key, value) for key, value in texts[0].attrib.items() if key != XML_SPACE))
+        if any(tuple(sorted((key, value) for key, value in node.attrib.items() if key != XML_SPACE))
+               != attributes for node in texts):
+            return None
+        formatting = None if properties is None else etree.tostring(properties, method='c14n', with_comments=True)
+        return tuple(sorted(run.attrib.items())), formatting, attributes
+
+    merged = 0
+    for owner in root.iter():
+        if owner.tag not in owners:
+            continue
+        ancestry = [owner, *owner.iterancestors()]
+        if any(node.tag in BOUNDARY_CONTAINERS or node in blocked_paragraphs for node in ancestry):
+            continue
+        group = []
+        current_signature = None
+
+        def flush():
+            nonlocal merged
+            if len(group) > 1:
+                text_nodes = [node for run in group for node in run if node.tag == text_tag]
+                value = ''.join(node.text or '' for node in text_nodes)
+                keep = text_nodes[0]
+                preserve_space = any(node.get(XML_SPACE) == 'preserve' for node in text_nodes)
+                keep.text = value
+                if preserve_space or (value and (value[0].isspace() or value[-1].isspace())):
+                    keep.set(XML_SPACE, 'preserve')
+                for node in list(group[0]):
+                    if node.tag == text_tag and node is not keep:
+                        group[0].remove(node)
+                for run in group[1:]:
+                    owner.remove(run)
+                merged += len(group) - 1
+            group.clear()
+
+        for child in list(owner):
+            key = signature(child)
+            if key is None or (group and key != current_signature):
+                flush()
+            if key is not None:
+                group.append(child)
+                current_signature = key
+            else:
+                current_signature = None
+        flush()
+    counts['runs_merged'] += merged
+    counts['runs_after'] += before - merged
+    return bool(merged)

@@ -265,6 +265,8 @@ def _report(counts) -> str:
     )
     if counts.get("fields"):
         text += f"Коды полей Word сохранены без обработки: {counts['fields']}. "
+    if counts.get("runs_merged"):
+        text += f"Объединено соседних фрагментов с одинаковым оформлением: {counts['runs_merged']}. "
     return text + "Проверьте итог в Word. Метаданные внутри изображений не изменяются."
 
 
@@ -311,7 +313,7 @@ async def _process(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 except asyncio.CancelledError:
                     await worker
                     raise
-                await message.reply_document(document=io.BytesIO(result), filename=f"{pending.name}_improved.docx",
+                await message.reply_document(document=io.BytesIO(result), filename=f"{pending.name}.docx",
                                              caption=_report(counts))
     except InvalidDocument as error:
         await reply(message, html(str(error)))
